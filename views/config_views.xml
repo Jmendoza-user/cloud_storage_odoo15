@@ -10,6 +10,10 @@
                     <header>
                         <button name="fix_sync_configuration" type="object" string="Fix Configuration" 
                                 class="btn-warning"/>
+                        <button name="action_check_and_refresh_tokens" type="object" string="Check &amp; Refresh Tokens" 
+                                class="btn-info"/>
+                        <button name="action_force_token_refresh" type="object" string="Force Refresh Tokens" 
+                                class="btn-warning"/>
                         <button name="manual_sync" type="object" string="Quick Sync (500 files)" 
                                 class="oe_highlight" context="{'sync_type': 'manual'}"
                                 attrs="{'invisible': [('is_active', '=', False)]}"/>

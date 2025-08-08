@@ -13,5 +13,18 @@
             <field name="active" eval="True"/>
             <field name="doall" eval="False"/>
         </record>
+
+        <!-- Cloud Storage Token Refresh Cron Job -->
+        <record id="cron_cloud_storage_token_refresh" model="ir.cron">
+            <field name="name">Cloud Storage: Token Refresh</field>
+            <field name="model_id" ref="model_cloud_storage_config"/>
+            <field name="state">code</field>
+            <field name="code">model.action_check_and_refresh_tokens()</field>
+            <field name="interval_number">6</field>
+            <field name="interval_type">hours</field>
+            <field name="numbercall">-1</field>
+            <field name="active" eval="True"/>
+            <field name="doall" eval="False"/>
+        </record>
     </data>
 </odoo>

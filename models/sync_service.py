@@ -22,35 +22,52 @@ class CloudStorageSyncService(models.Model):
             if not auth_config.access_token:
                 raise UserError("No access token available for authentication")
             
-            # Check if token is expired and refresh if needed
-            if auth_config.token_expiry and auth_config.token_expiry <= fields.Datetime.now():
-                _logger.info(f"Token expired for {auth_config.name}, attempting refresh")
-                if not auth_config.refresh_access_token():
-                    raise UserError("Failed to refresh expired access token")
-                
+            # Use the improved token validation from the auth model
+            try:
+                valid_token = auth_config._get_valid_token()
+            except Exception as token_error:
+                _logger.error(f"Token validation failed for {auth_config.name}: {str(token_error)}")
+                raise UserError(f"Error de autenticación: {str(token_error)}")
+            
             credentials = Credentials(
-                token=auth_config.access_token,
+                token=valid_token,
                 refresh_token=auth_config.refresh_token,
                 client_id=auth_config.client_id,
                 client_secret=auth_config.client_secret,
                 token_uri='https://accounts.google.com/o/oauth2/token'
             )
             
-            # Build service and check if token needs refresh
+            # Build service
             service = build('drive', 'v3', credentials=credentials)
             
-            # If credentials were refreshed, update them in database
-            if credentials.token != auth_config.access_token:
-                auth_config.write({
-                    'access_token': credentials.token,
-                    'token_expiry': datetime.now() + timedelta(seconds=3600)  # Default 1 hour
-                })
-                _logger.info(f"Updated refreshed token for auth config {auth_config.name}")
+            # Test the service with a simple API call to verify credentials
+            try:
+                # Make a simple API call to test the connection
+                service.about().get(fields='user').execute()
+                _logger.info(f"Successfully connected to Google Drive for {auth_config.name}")
+            except Exception as api_error:
+                _logger.error(f"API test failed for {auth_config.name}: {str(api_error)}")
+                # Try to refresh token and retry
+                if auth_config.refresh_access_token():
+                    _logger.info(f"Token refreshed, retrying API call for {auth_config.name}")
+                    # Update credentials with new token
+                    credentials = Credentials(
+                        token=auth_config.access_token,
+                        refresh_token=auth_config.refresh_token,
+                        client_id=auth_config.client_id,
+                        client_secret=auth_config.client_secret,
+                        token_uri='https://accounts.google.com/o/oauth2/token'
+                    )
+                    service = build('drive', 'v3', credentials=credentials)
+                    # Test again
+                    service.about().get(fields='user').execute()
+                else:
+                    raise UserError("Failed to refresh access token and establish connection")
             
             return service
             
         except Exception as e:
-            _logger.error(f"Error creating Google Drive service: {str(e)}")
+            _logger.error(f"Error creating Google Drive service for {auth_config.name}: {str(e)}")
             raise UserError(f"Error connecting to Google Drive: {str(e)}")
 
     def _create_virtual_attachment(self, record, field_name, file_name):

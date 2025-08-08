@@ -124,7 +124,14 @@ class CloudStorageAuth(models.Model):
         self.ensure_one()
         
         if not self.refresh_token:
-            raise UserError("No refresh token available")
+            _logger.error("No refresh token available for token refresh")
+            self.state = 'error'
+            return False
+        
+        if not self.client_id or not self.client_secret:
+            _logger.error("Client ID or Client Secret missing for token refresh")
+            self.state = 'error'
+            return False
         
         try:
             url = 'https://accounts.google.com/o/oauth2/token'
@@ -135,21 +142,55 @@ class CloudStorageAuth(models.Model):
                 'grant_type': 'refresh_token'
             }
             
-            response = requests.post(url, data=data)
+            _logger.info(f"Attempting to refresh token for auth config: {self.name}")
+            response = requests.post(url, data=data, timeout=30)
+            
+            if response.status_code == 400:
+                error_data = response.json()
+                error_msg = error_data.get('error_description', 'Unknown error')
+                _logger.error(f"Token refresh failed with 400 error: {error_msg}")
+                
+                # Check if refresh token is invalid
+                if 'invalid_grant' in error_msg.lower():
+                    self.state = 'expired'
+                    _logger.warning(f"Refresh token appears to be invalid for {self.name}")
+                else:
+                    self.state = 'error'
+                
+                return False
+            
             response.raise_for_status()
             
             token_data = response.json()
             
+            if not token_data.get('access_token'):
+                _logger.error("No access token received in refresh response")
+                self.state = 'error'
+                return False
+            
+            # Calculate expiry time
+            expires_in = token_data.get('expires_in', 3600)
+            expiry_time = fields.Datetime.now() + timedelta(seconds=expires_in)
+            
             self.write({
                 'access_token': token_data.get('access_token'),
-                'token_expiry': fields.Datetime.now() + timedelta(seconds=token_data.get('expires_in', 3600)),
+                'token_expiry': expiry_time,
                 'state': 'authorized'
             })
             
+            _logger.info(f"Successfully refreshed token for {self.name}. New expiry: {expiry_time}")
             return True
             
+        except requests.exceptions.Timeout:
+            _logger.error(f"Timeout while refreshing token for {self.name}")
+            self.state = 'error'
+            return False
+        except requests.exceptions.RequestException as e:
+            _logger.error(f"Network error while refreshing token for {self.name}: {str(e)}")
+            self.state = 'error'
+            return False
         except Exception as e:
-            _logger.error(f'Error refreshing token: {str(e)}')
+            _logger.error(f'Unexpected error refreshing token for {self.name}: {str(e)}')
             self.state = 'error'
             return False
     
@@ -160,10 +201,16 @@ class CloudStorageAuth(models.Model):
         if not self.access_token:
             raise UserError("No access token available. Please authorize first.")
         
-        # Check if token is expired
-        if self.token_expiry and self.token_expiry <= fields.Datetime.now():
-            if not self.refresh_access_token():
-                raise UserError("Failed to refresh access token")
+        # Check if token is expired or will expire soon (within 5 minutes)
+        now = fields.Datetime.now()
+        if self.token_expiry:
+            time_until_expiry = self.token_expiry - now
+            
+            # If token is expired or will expire within 5 minutes, refresh it
+            if time_until_expiry.total_seconds() <= 300:  # 5 minutes
+                _logger.info(f"Token for {self.name} is expired or expiring soon, attempting refresh")
+                if not self.refresh_access_token():
+                    raise UserError("Failed to refresh access token")
         
         return self.access_token
 
@@ -200,6 +247,110 @@ class CloudStorageAuth(models.Model):
                 'tag': 'display_notification',
                 'params': {
                     'message': f"Error de conexión: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    def action_refresh_token(self):
+        """Action to manually refresh the access token"""
+        self.ensure_one()
+        
+        try:
+            if not self.refresh_token:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'message': "No hay token de refresco disponible. Necesitas reautorizar la conexión.",
+                        'type': 'warning'
+                    }
+                }
+            
+            if self.refresh_access_token():
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'message': f"Token refrescado exitosamente. Nuevo vencimiento: {self.token_expiry}",
+                        'type': 'success'
+                    }
+                }
+            else:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'message': "Error al refrescar el token. Verifica tu configuración.",
+                        'type': 'danger'
+                    }
+                }
+                
+        except Exception as e:
+            _logger.error(f"Error refreshing token: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error al refrescar el token: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    def action_check_token_status(self):
+        """Check and display current token status"""
+        self.ensure_one()
+        
+        try:
+            if not self.access_token:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'message': "No hay token de acceso configurado.",
+                        'type': 'warning'
+                    }
+                }
+            
+            if not self.token_expiry:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'message': "Token de acceso sin fecha de vencimiento configurada.",
+                        'type': 'warning'
+                    }
+                }
+            
+            now = fields.Datetime.now()
+            time_until_expiry = self.token_expiry - now
+            
+            if time_until_expiry.total_seconds() <= 0:
+                status_msg = "Token expirado"
+                status_type = "danger"
+            elif time_until_expiry.total_seconds() < 3600:  # Less than 1 hour
+                status_msg = f"Token expira en {int(time_until_expiry.total_seconds() / 60)} minutos"
+                status_type = "warning"
+            else:
+                hours_remaining = int(time_until_expiry.total_seconds() / 3600)
+                status_msg = f"Token válido por {hours_remaining} horas"
+                status_type = "success"
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Estado del token: {status_msg}",
+                    'type': status_type
+                }
+            }
+            
+        except Exception as e:
+            _logger.error(f"Error checking token status: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error al verificar estado del token: {str(e)}",
                     'type': 'danger'
                 }
             }
@@ -394,6 +545,107 @@ class CloudStorageConfig(models.Model):
                 'type': 'success'
             }
         }
+
+    def action_check_and_refresh_tokens(self):
+        """Check all active configurations and refresh tokens if needed"""
+        try:
+            active_configs = self.search([('is_active', '=', True)])
+            refreshed_count = 0
+            error_count = 0
+            status_details = []
+            
+            for config in active_configs:
+                if config.auth_id and config.auth_id.state == 'authorized':
+                    try:
+                        # This will automatically refresh if needed
+                        config.auth_id._get_valid_token()
+                        refreshed_count += 1
+                        status_details.append(f"✓ {config.name}: Token válido")
+                        _logger.info(f"Token checked/refreshed for config: {config.name}")
+                    except Exception as e:
+                        error_count += 1
+                        status_details.append(f"✗ {config.name}: {str(e)}")
+                        _logger.error(f"Error checking/refreshing token for config {config.name}: {str(e)}")
+                else:
+                    status_details.append(f"- {config.name}: Sin autenticación válida")
+            
+            # Create detailed message
+            if status_details:
+                message = f"Verificación completada:\n" + "\n".join(status_details)
+            else:
+                message = "No se encontraron configuraciones activas para verificar"
+            
+            notification_type = 'success' if error_count == 0 else 'warning'
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': message,
+                    'type': notification_type,
+                    'sticky': True  # Make notification sticky for detailed info
+                }
+            }
+            
+        except Exception as e:
+            _logger.error(f"Error in token check and refresh: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error al verificar tokens: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    def action_force_token_refresh(self):
+        """Force refresh all tokens regardless of expiry"""
+        try:
+            active_configs = self.search([('is_active', '=', True)])
+            refreshed_count = 0
+            error_count = 0
+            
+            for config in active_configs:
+                if config.auth_id and config.auth_id.state == 'authorized':
+                    try:
+                        # Force refresh by calling refresh_access_token directly
+                        if config.auth_id.refresh_access_token():
+                            refreshed_count += 1
+                            _logger.info(f"Token force refreshed for config: {config.name}")
+                        else:
+                            error_count += 1
+                            _logger.error(f"Failed to force refresh token for config: {config.name}")
+                    except Exception as e:
+                        error_count += 1
+                        _logger.error(f"Error force refreshing token for config {config.name}: {str(e)}")
+            
+            message = f"Refresco forzado completado: {refreshed_count} tokens actualizados, {error_count} errores"
+            notification_type = 'success' if error_count == 0 else 'warning'
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': message,
+                    'type': notification_type
+                }
+            }
+            
+        except Exception as e:
+            _logger.error(f"Error in force token refresh: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error al refrescar tokens: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    @api.model
+    def action_global_token_status(self):
+        """Global action to check token status from menu"""
+        return self.action_check_and_refresh_tokens()
 
 
 class CloudStorageModelConfig(models.Model):

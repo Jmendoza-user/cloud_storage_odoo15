@@ -12,6 +12,10 @@
                                 class="oe_highlight" attrs="{'invisible': [('state', 'in', ['authorized', 'pending'])]}"/>
                         <button name="test_connection" type="object" string="Test Connection" 
                                 class="oe_highlight" attrs="{'invisible': [('state', '!=', 'authorized')]}"/>
+                        <button name="action_check_token_status" type="object" string="Check Token Status" 
+                                class="btn-secondary" attrs="{'invisible': [('state', '!=', 'authorized')]}"/>
+                        <button name="action_refresh_token" type="object" string="Refresh Token" 
+                                class="btn-warning" attrs="{'invisible': [('state', '!=', 'authorized')]}"/>
                         <field name="state" widget="statusbar" statusbar_visible="draft,pending,authorized"/>
                     </header>
                     <sheet>
@@ -21,17 +25,33 @@
                             </h1>
                         </div>
                         <group>
-                            <group>
-                                <field name="client_id" password="True"/>
-                                <field name="client_secret" password="True"/>
-                                <field name="redirect_uri" placeholder="http://10.10.6.222:8089/cloud_storage/oauth/callback"/>
-                                <field name="is_active"/>
+                            <group string="Credentials" col="4">
+                                <field name="client_id" password="True" nolabel="1" placeholder="Google Client ID"
+                                       class="o_field_long_text"/>
+                                <field name="client_secret" password="True" nolabel="1" placeholder="Google Client Secret"
+                                       class="o_field_long_text"/>
+                                <field name="redirect_uri" nolabel="1" placeholder="http://10.10.6.222:8089/cloud_storage/oauth/callback"
+                                       class="o_field_long_text"/>
+                                <field name="is_active" nolabel="1"/>
                             </group>
-                            <group>
-                                <field name="access_token" readonly="1" attrs="{'invisible': [('access_token', '=', False)]}"/>
-                                <field name="token_expiry" readonly="1" attrs="{'invisible': [('token_expiry', '=', False)]}"/>
-                                <field name="auth_uri" readonly="1" attrs="{'invisible': [('auth_uri', '=', False)]}"/>
+                        </group>
+                        
+                        <group string="Token Information" attrs="{'invisible': [('state', '!=', 'authorized')]}">
+                            <group string="Access Token" col="1">
+                                <field name="access_token" readonly="1" nolabel="1" 
+                                       widget="text" class="o_field_long_text o_field_token"/>
                             </group>
+                            <group string="Token Details" col="2">
+                                <field name="token_expiry" readonly="1" nolabel="1" placeholder="Token Expiry Date"/>
+                                <field name="refresh_token" readonly="1" nolabel="1" password="True" 
+                                       attrs="{'invisible': [('refresh_token', '=', False)]}"
+                                       class="o_field_long_text o_field_token"/>
+                            </group>
+                        </group>
+                        
+                        <group string="Authorization URL" attrs="{'invisible': [('auth_uri', '=', False)]}">
+                            <field name="auth_uri" readonly="1" nolabel="1" 
+                                   widget="url" class="o_field_long_text o_field_url"/>
                         </group>
                         <notebook>
                             <page string="Instructions">
@@ -48,6 +68,22 @@
                                             <li>Click "Authorize" to complete authentication</li>
                                         </ol>
                                     </div>
+                                </group>
+                            </page>
+                            <page string="Technical Details" attrs="{'invisible': [('state', '!=', 'authorized')]}">
+                                <group>
+                                    <group string="Token Information">
+                                        <field name="access_token" readonly="1" string="Access Token" 
+                                               widget="text" class="o_field_long_text o_field_token"/>
+                                        <field name="refresh_token" readonly="1" string="Refresh Token" password="True"
+                                               attrs="{'invisible': [('refresh_token', '=', False)]}"
+                                               class="o_field_long_text o_field_token"/>
+                                        <field name="token_expiry" readonly="1" string="Token Expiry"/>
+                                    </group>
+                                    <group string="Authorization Details">
+                                        <field name="auth_uri" readonly="1" string="Authorization URL" 
+                                               widget="url" class="o_field_long_text o_field_url"/>
+                                    </group>
                                 </group>
                             </page>
                         </notebook>

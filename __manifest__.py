@@ -31,6 +31,12 @@
         'views/sync_log_views.xml',
         'views/menu_views.xml',
     ],
+    
+    'assets': {
+        'web.assets_backend': [
+            'cloud_storage/static/src/css/auth_form.css',
+        ],
+    },
 
     'demo': [
         'demo/demo.xml',

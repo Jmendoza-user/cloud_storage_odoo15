@@ -33,12 +33,27 @@
                   parent="menu_cloud_storage_main" 
                   sequence="20"/>
 
+        <!-- Global Token Status Action -->
+        <record id="action_global_token_status" model="ir.actions.server">
+            <field name="name">Check Token Status</field>
+            <field name="model_id" ref="model_cloud_storage_config"/>
+            <field name="state">code</field>
+            <field name="code">model.action_global_token_status()</field>
+        </record>
+
         <!-- Manual Sync Menu -->
         <menuitem id="menu_cloud_storage_manual_sync" 
                   name="Manual Sync" 
                   parent="menu_cloud_storage_operations" 
                   action="action_manual_sync" 
                   sequence="10"/>
+
+        <!-- Token Status Menu -->
+        <menuitem id="menu_cloud_storage_token_status" 
+                  name="Check Token Status" 
+                  parent="menu_cloud_storage_operations" 
+                  action="action_global_token_status" 
+                  sequence="15"/>
 
         <!-- Sync Logs Menu -->
         <menuitem id="menu_cloud_storage_sync_logs" 
