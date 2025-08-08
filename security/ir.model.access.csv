@@ -1,0 +1,12 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_cloud_storage_auth_admin,cloud_storage.auth.admin,model_cloud_storage_auth,base.group_system,1,1,1,1
+access_cloud_storage_auth_user,cloud_storage.auth.user,model_cloud_storage_auth,base.group_user,1,0,0,0
+access_cloud_storage_config_admin,cloud_storage.config.admin,model_cloud_storage_config,base.group_system,1,1,1,1
+access_cloud_storage_config_user,cloud_storage.config.user,model_cloud_storage_config,base.group_user,1,0,0,0
+access_cloud_storage_model_config_admin,cloud_storage.model.config.admin,model_cloud_storage_model_config,base.group_system,1,1,1,1
+access_cloud_storage_model_config_user,cloud_storage.model.config.user,model_cloud_storage_model_config,base.group_user,1,0,0,0
+access_cloud_storage_file_type_admin,cloud_storage.file.type.admin,model_cloud_storage_file_type,base.group_system,1,1,1,1
+access_cloud_storage_file_type_user,cloud_storage.file.type.user,model_cloud_storage_file_type,base.group_user,1,0,0,0
+access_cloud_storage_sync_log_admin,cloud_storage.sync.log.admin,model_cloud_storage_sync_log,base.group_system,1,1,1,1
+access_cloud_storage_sync_log_user,cloud_storage.sync.log.user,model_cloud_storage_sync_log,base.group_user,1,0,0,0
+access_cloud_storage_sync_service_admin,cloud_storage.sync.service.admin,model_cloud_storage_sync_service,base.group_system,1,1,1,1

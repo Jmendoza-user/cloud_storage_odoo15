@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- Cloud Storage Configuration Form View -->
+        <record id="view_cloud_storage_config_form" model="ir.ui.view">
+            <field name="name">cloud.storage.config.form</field>
+            <field name="model">cloud_storage.config</field>
+            <field name="arch" type="xml">
+                <form string="Cloud Storage Configuration">
+                    <header>
+                        <button name="fix_sync_configuration" type="object" string="Fix Configuration" 
+                                class="btn-warning"/>
+                        <button name="manual_sync" type="object" string="Quick Sync (500 files)" 
+                                class="oe_highlight" context="{'sync_type': 'manual'}"
+                                attrs="{'invisible': [('is_active', '=', False)]}"/>
+                        <button name="complete_sync" type="object" string="Complete Sync (All Files)" 
+                                class="btn-primary" context="{'sync_type': 'complete'}"
+                                attrs="{'invisible': [('is_active', '=', False)]}"/>
+                    </header>
+                    <sheet>
+                        <div class="oe_title">
+                            <h1>
+                                <field name="name" placeholder="Configuration Name"/>
+                            </h1>
+                        </div>
+                        <group>
+                            <group>
+                                <field name="auth_id" options="{'no_create': True}"/>
+                                <field name="is_active"/>
+                                <field name="replace_local_with_cloud"/>
+                                <field name="delete_local_after_sync"/>
+                            </group>
+                            <group>
+                                <field name="auto_sync"/>
+                                <field name="sync_frequency" attrs="{'invisible': [('auto_sync', '=', False)]}"/>
+                            </group>
+                        </group>
+                        <notebook>
+                            <page string="Model Configuration">
+                                <field name="model_config_ids" nolabel="1">
+                                    <tree string="Models to Sync" editable="bottom">
+                                        <field name="model_name"/>
+                                        <field name="display_name"/>
+                                        <field name="field_name"/>
+                                        <field name="drive_folder_name"/>
+                                        <field name="is_active"/>
+                                    </tree>
+                                    <form string="Model Configuration">
+                                        <group>
+                                            <field name="model_name"/>
+                                            <field name="display_name"/>
+                                            <field name="field_name"/>
+                                            <field name="drive_folder_name"/>
+                                            <field name="is_active"/>
+                                        </group>
+                                    </form>
+                                </field>
+                            </page>
+                            <page string="File Types">
+                                <field name="file_type_ids" nolabel="1">
+                                    <tree string="Allowed File Types" editable="bottom">
+                                        <field name="extension"/>
+                                        <field name="description"/>
+                                        <field name="max_size_mb"/>
+                                        <field name="is_active"/>
+                                    </tree>
+                                    <form string="File Type Configuration">
+                                        <group>
+                                            <field name="extension"/>
+                                            <field name="description"/>
+                                            <field name="max_size_mb"/>
+                                            <field name="is_active"/>
+                                        </group>
+                                    </form>
+                                </field>
+                            </page>
+                        </notebook>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <!-- Cloud Storage Configuration Tree View -->
+        <record id="view_cloud_storage_config_tree" model="ir.ui.view">
+            <field name="name">cloud.storage.config.tree</field>
+            <field name="model">cloud_storage.config</field>
+            <field name="arch" type="xml">
+                <tree string="Cloud Storage Configurations">
+                    <field name="name"/>
+                    <field name="auth_id"/>
+                    <field name="auto_sync"/>
+                    <field name="sync_frequency"/>
+                    <field name="is_active"/>
+                </tree>
+            </field>
+        </record>
+
+        <!-- Cloud Storage Configuration Action -->
+        <record id="action_cloud_storage_config" model="ir.actions.act_window">
+            <field name="name">Cloud Storage Configuration</field>
+            <field name="type">ir.actions.act_window</field>
+            <field name="res_model">cloud_storage.config</field>
+            <field name="view_mode">tree,form</field>
+            <field name="help" type="html">
+                <p class="o_view_nocontent_smiling_face">
+                    Create your first synchronization configuration!
+                </p>
+                <p>
+                    Configure which models and file types should be synchronized with Google Drive.
+                    Make sure to set up authentication first.
+                </p>
+            </field>
+        </record>
+
+        <!-- Model Configuration Tree View -->
+        <record id="view_cloud_storage_model_config_tree" model="ir.ui.view">
+            <field name="name">cloud.storage.model.config.tree</field>
+            <field name="model">cloud_storage.model.config</field>
+            <field name="arch" type="xml">
+                <tree string="Model Configurations">
+                    <field name="config_id"/>
+                    <field name="display_name"/>
+                    <field name="field_name"/>
+                    <field name="drive_folder_name"/>
+                    <field name="is_active"/>
+                </tree>
+            </field>
+        </record>
+
+        <!-- Model Configuration Action -->
+        <record id="action_cloud_storage_model_config" model="ir.actions.act_window">
+            <field name="name">Model Configurations</field>
+            <field name="type">ir.actions.act_window</field>
+            <field name="res_model">cloud_storage.model.config</field>
+            <field name="view_mode">tree,form</field>
+        </record>
+
+        <!-- File Type Tree View -->
+        <record id="view_cloud_storage_file_type_tree" model="ir.ui.view">
+            <field name="name">cloud.storage.file.type.tree</field>
+            <field name="model">cloud_storage.file.type</field>
+            <field name="arch" type="xml">
+                <tree string="File Types">
+                    <field name="config_id"/>
+                    <field name="extension"/>
+                    <field name="description"/>
+                    <field name="max_size_mb"/>
+                    <field name="is_active"/>
+                </tree>
+            </field>
+        </record>
+
+        <!-- File Type Action -->
+        <record id="action_cloud_storage_file_type" model="ir.actions.act_window">
+            <field name="name">File Types</field>
+            <field name="type">ir.actions.act_window</field>
+            <field name="res_model">cloud_storage.file.type</field>
+            <field name="view_mode">tree,form</field>
+        </record>
+
+        <!-- Manual Sync Action -->
+        <record id="action_manual_sync" model="ir.actions.server">
+            <field name="name">Manual Synchronization</field>
+            <field name="model_id" ref="model_cloud_storage_sync_service"/>
+            <field name="state">code</field>
+            <field name="code">action = model.manual_sync()</field>
+        </record>
+    </data>
+</odoo>

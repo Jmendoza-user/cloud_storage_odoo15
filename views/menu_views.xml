@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- Main Menu -->
+        <menuitem id="menu_cloud_storage_main" 
+                  name="Cloud Storage" 
+                  web_icon="cloud_storage,static/description/icon.png"
+                  sequence="10"/>
+
+        <!-- Configuration Submenu -->
+        <menuitem id="menu_cloud_storage_config" 
+                  name="Configuration" 
+                  parent="menu_cloud_storage_main" 
+                  sequence="10"/>
+
+        <!-- Authentication Menu -->
+        <menuitem id="menu_cloud_storage_auth" 
+                  name="Google Drive Auth" 
+                  parent="menu_cloud_storage_config" 
+                  action="action_cloud_storage_auth" 
+                  sequence="10"/>
+
+        <!-- Configuration Menu -->
+        <menuitem id="menu_cloud_storage_configuration" 
+                  name="Sync Configuration" 
+                  parent="menu_cloud_storage_config" 
+                  action="action_cloud_storage_config" 
+                  sequence="20"/>
+
+        <!-- Operations Submenu -->
+        <menuitem id="menu_cloud_storage_operations" 
+                  name="Operations" 
+                  parent="menu_cloud_storage_main" 
+                  sequence="20"/>
+
+        <!-- Manual Sync Menu -->
+        <menuitem id="menu_cloud_storage_manual_sync" 
+                  name="Manual Sync" 
+                  parent="menu_cloud_storage_operations" 
+                  action="action_manual_sync" 
+                  sequence="10"/>
+
+        <!-- Sync Logs Menu -->
+        <menuitem id="menu_cloud_storage_sync_logs" 
+                  name="Sync Logs" 
+                  parent="menu_cloud_storage_operations" 
+                  action="action_cloud_storage_sync_log" 
+                  sequence="20"/>
+
+        <!-- Dashboard Menu -->
+        <menuitem id="menu_cloud_storage_dashboard" 
+                  name="Dashboard" 
+                  parent="menu_cloud_storage_main" 
+                  action="action_cloud_storage_dashboard" 
+                  sequence="30"/>
+
+        <!-- Advanced Submenu -->
+        <menuitem id="menu_cloud_storage_advanced" 
+                  name="Advanced" 
+                  parent="menu_cloud_storage_main" 
+                  sequence="40"
+                  groups="base.group_system"/>
+
+        <!-- Model Config Menu -->
+        <menuitem id="menu_cloud_storage_model_config" 
+                  name="Model Configurations" 
+                  parent="menu_cloud_storage_advanced" 
+                  action="action_cloud_storage_model_config" 
+                  sequence="10"
+                  groups="base.group_system"/>
+
+        <!-- File Types Menu -->
+        <menuitem id="menu_cloud_storage_file_types" 
+                  name="File Types" 
+                  parent="menu_cloud_storage_advanced" 
+                  action="action_cloud_storage_file_type" 
+                  sequence="20"
+                  groups="base.group_system"/>
+    </data>
+</odoo>
