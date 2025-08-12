@@ -374,6 +374,7 @@ class CloudStorageConfig(models.Model):
                                            help="Remove local files after successful sync to cloud storage (saves disk space)")
     replace_local_with_cloud = fields.Boolean('Replace Local with Cloud URLs', default=True,
                                             help="Update file references to point to cloud storage instead of local files")
+    drive_root_folder_id = fields.Char('Drive Root Folder ID', help="Root folder ID in Drive to store synced files")
     
     # Performance optimizations
     enable_cloud_access = fields.Boolean('Enable Cloud Access', default=True,
@@ -390,21 +391,164 @@ class CloudStorageConfig(models.Model):
     def get_active_config(self):
         return self.search([('is_active', '=', True)], limit=1)
 
+    @api.model
     def manual_sync(self):
-        self.ensure_one()
-        if not self.is_active:
-            raise UserError("Configuration is not active")
-        
+        """Ejecuta la sincronización manual sin requerir un registro activo."""
         sync_service = self.env['cloud_storage.sync.service']
         return sync_service.manual_sync()
     
-    def complete_sync(self):
-        self.ensure_one()
-        if not self.is_active:
-            raise UserError("Configuration is not active")
-        
+    @api.model
+    def complete_sync(self, batch_size=50):
+        """Ejecuta la sincronización completa sin requerir un registro activo.
+
+        Permite que una acción de servidor invoque `model.complete_sync()` aunque
+        no haya un `active_id`, evitando el error de singleton.
+        """
         sync_service = self.env['cloud_storage.sync.service']
-        return sync_service.complete_sync()
+        return sync_service.complete_sync(batch_size=batch_size)
+
+    # Acciones utilitarias de migración/restauración
+    def action_migrate_between_accounts(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'cloud_storage.wizard.migrate',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_source_auth_id': self.auth_id.id,
+                'default_target_auth_id': self.auth_id.id,
+                'default_source_folder_id': self.drive_root_folder_id or '',
+                'default_target_folder_id': self.drive_root_folder_id or '',
+                'default_recursive': True,
+            }
+        }
+
+    def action_restore_local_from_folder(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'cloud_storage.wizard.restore',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_auth_id': self.auth_id.id,
+                'default_folder_id': self.drive_root_folder_id or '',
+                'default_recursive': True,
+                'default_link_existing': True,
+            }
+        }
+
+
+class CloudStorageWizardMigrate(models.TransientModel):
+    _name = 'cloud_storage.wizard.migrate'
+    _description = 'Wizard: Migrate Between Drive Accounts'
+
+    source_auth_id = fields.Many2one('cloud_storage.auth', 'Source Auth', required=True)
+    target_auth_id = fields.Many2one('cloud_storage.auth', 'Target Auth', required=True)
+    source_folder_id = fields.Char('Source Folder ID')
+    target_folder_id = fields.Char('Target Folder ID')
+    recursive = fields.Boolean('Recursive', default=True)
+    limit = fields.Integer('Max Files (0 = no limit)', default=0)
+    verify_integrity = fields.Boolean('Verify Checksum/Size before cleanup', default=True)
+    delete_source = fields.Boolean('Delete in Source After Migration', default=False)
+    delete_mode = fields.Selection([
+        ('trash', 'Move to Trash'),
+        ('delete', 'Delete Permanently')
+    ], default='trash', string='Cleanup Mode')
+
+    def action_run(self):
+        self.ensure_one()
+        if self.source_auth_id.id == self.target_auth_id.id:
+            raise UserError('La cuenta de origen y destino no pueden ser la misma')
+        # Confirmación previa: mostrar conteo/impacto si no viene flag de confirmación
+        if not self.env.context.get('confirmed'):
+            preview = self.env['cloud_storage.sync.service'].preview_migration(
+                source_auth_id=self.source_auth_id.id,
+                only_folder_id=(self.source_folder_id or None),
+                recursive=self.recursive,
+                limit=max(self.limit, 0)
+            )
+            size_mb = (preview['total_size'] or 0) / (1024*1024)
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Previsualización: {preview['count']} archivo(s), {size_mb:.2f} MB aprox. Ejemplos: {', '.join(preview['sample'])}",
+                    'type': 'warning',
+                    'sticky': True
+                }
+            }
+        migrated = self.env['cloud_storage.sync.service'].migrate_attachments_between_auth(
+            source_auth_id=self.source_auth_id.id,
+            target_auth_id=self.target_auth_id.id,
+            only_folder_id=(self.source_folder_id or None),
+            target_folder_id=(self.target_folder_id or None),
+            recursive=self.recursive,
+            limit=max(self.limit, 0),
+            verify_integrity=self.verify_integrity,
+            delete_source=self.delete_source,
+            delete_mode=self.delete_mode
+        )
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'message': f"Migración completada: {migrated} archivo(s)",
+                'type': 'success'
+            }
+        }
+
+
+class CloudStorageWizardRestore(models.TransientModel):
+    _name = 'cloud_storage.wizard.restore'
+    _description = 'Wizard: Restore Local From Drive Folder'
+
+    auth_id = fields.Many2one('cloud_storage.auth', 'Auth', required=True)
+    folder_id = fields.Char('Drive Folder ID', required=True)
+    recursive = fields.Boolean('Recursive', default=True)
+    link_existing = fields.Boolean('Link Existing Attachments', default=True)
+    default_res_model = fields.Char('Default Res Model')
+    default_res_id = fields.Integer('Default Res ID')
+    limit = fields.Integer('Max Files (0 = no limit)', default=0)
+
+    def action_run(self):
+        self.ensure_one()
+        # Confirmación previa
+        if not self.env.context.get('confirmed'):
+            preview = self.env['cloud_storage.sync.service'].preview_restore(
+                auth_id=self.auth_id.id,
+                folder_id=self.folder_id,
+                recursive=self.recursive,
+                limit=max(self.limit, 0)
+            )
+            size_mb = (preview['total_size'] or 0) / (1024*1024)
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Previsualización: {preview['count']} archivo(s), {size_mb:.2f} MB aprox. Ejemplos: {', '.join(preview['sample'])}",
+                    'type': 'warning',
+                    'sticky': True
+                }
+            }
+        restored = self.env['cloud_storage.sync.service'].restore_local_from_drive_folder(
+            auth_id=self.auth_id.id,
+            folder_id=self.folder_id,
+            recursive=self.recursive,
+            link_existing=self.link_existing,
+            default_res_model=(self.default_res_model or None),
+            default_res_id=(self.default_res_id or None),
+            limit=max(self.limit, 0)
+        )
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'message': f"Restauración completada: {restored} archivo(s)",
+                'type': 'success'
+            }
+        }
     
     def create_default_model_configs(self):
         """Create default model configurations for common Odoo models with attachments"""

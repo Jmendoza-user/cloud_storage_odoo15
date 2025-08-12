@@ -6,7 +6,7 @@
             <field name="name">cloud.storage.auth.form</field>
             <field name="model">cloud_storage.auth</field>
             <field name="arch" type="xml">
-                <form string="Google Drive Authentication">
+                <form string="Google Drive Authentication" class="cloud_storage_scope">
                     <header>
                         <button name="action_authorize" type="object" string="Authorize" 
                                 class="oe_highlight" attrs="{'invisible': [('state', 'in', ['authorized', 'pending'])]}"/>

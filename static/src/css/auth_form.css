@@ -1,7 +1,7 @@
-/* Cloud Storage Authentication Form Styles */
+/* Cloud Storage Authentication Form Styles (scoped) */
 
 /* Estilos para campos de texto largo */
-.o_field_long_text {
+.cloud_storage_scope .o_field_long_text {
     font-family: 'Courier New', monospace !important;
     font-size: 11px !important;
     word-break: break-all !important;
@@ -12,7 +12,7 @@
 }
 
 /* Estilos específicos para tokens */
-.o_field_token {
+.cloud_storage_scope .o_field_token {
     background-color: #f8f9fa !important;
     padding: 8px !important;
     border-radius: 4px !important;
@@ -23,7 +23,7 @@
 }
 
 /* Estilos específicos para URLs */
-.o_field_url {
+.cloud_storage_scope .o_field_url {
     background-color: #e3f2fd !important;
     padding: 8px !important;
     border-radius: 4px !important;
@@ -34,8 +34,8 @@
 }
 
 /* Asegurar que los campos no se desborden */
-.o_field_long_text input,
-.o_field_long_text textarea {
+.cloud_storage_scope .o_field_long_text input,
+.cloud_storage_scope .o_field_long_text textarea {
     width: 100% !important;
     max-width: 100% !important;
     box-sizing: border-box !important;
@@ -45,29 +45,29 @@
 }
 
 /* Mejorar la presentación de campos de contraseña */
-.o_field_long_text input[type="password"] {
+.cloud_storage_scope .o_field_long_text input[type="password"] {
     font-family: 'Courier New', monospace !important;
     letter-spacing: 2px !important;
 }
 
 /* Estilos para grupos de campos */
-.o_form_view .o_group .o_group_col_6 {
+/* .cloud_storage_scope .o_form_view .o_group .o_group_col_6 {
     width: 100% !important;
     max-width: 100% !important;
-}
+} */
 
 /* Asegurar que los contenedores no se desborden */
-.o_form_view .o_form_sheet {
+/* .cloud_storage_scope .o_form_view .o_form_sheet {
     overflow-x: hidden !important;
-}
+} */
 
-.o_form_view .o_group {
+.cloud_storage_scope .o_form_view .o_group {
     max-width: 100% !important;
     overflow-x: hidden !important;
 }
 
 /* Estilos para campos readonly */
-.o_field_long_text[readonly] {
+.cloud_storage_scope .o_field_long_text[readonly] {
     background-color: #f8f9fa !important;
     border: 1px solid #dee2e6 !important;
     color: #495057 !important;
@@ -75,13 +75,14 @@
 
 /* Responsive design para pantallas pequeñas */
 @media (max-width: 768px) {
-    .o_field_long_text {
+    .cloud_storage_scope .o_field_long_text {
         font-size: 9px !important;
     }
     
-    .o_field_token,
-    .o_field_url {
+    .cloud_storage_scope .o_field_token,
+    .cloud_storage_scope .o_field_url {
         font-size: 9px !important;
         min-height: 40px !important;
     }
 }
+

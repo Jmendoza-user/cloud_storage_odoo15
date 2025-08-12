@@ -6,6 +6,8 @@ import logging
 import os
 import base64
 from datetime import datetime, timedelta
+import time
+import random
 
 _logger = logging.getLogger(__name__)
 
@@ -37,8 +39,8 @@ class CloudStorageSyncService(models.Model):
                 token_uri='https://accounts.google.com/o/oauth2/token'
             )
             
-            # Build service
-            service = build('drive', 'v3', credentials=credentials)
+            # Build service (disable discovery cache to avoid oauth2client warning)
+            service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
             
             # Test the service with a simple API call to verify credentials
             try:
@@ -58,7 +60,7 @@ class CloudStorageSyncService(models.Model):
                         client_secret=auth_config.client_secret,
                         token_uri='https://accounts.google.com/o/oauth2/token'
                     )
-                    service = build('drive', 'v3', credentials=credentials)
+                    service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
                     # Test again
                     service.about().get(fields='user').execute()
                 else:
@@ -69,6 +71,332 @@ class CloudStorageSyncService(models.Model):
         except Exception as e:
             _logger.error(f"Error creating Google Drive service for {auth_config.name}: {str(e)}")
             raise UserError(f"Error connecting to Google Drive: {str(e)}")
+
+    def _execute_with_backoff(self, func, *, max_retries: int = 5, base_delay: float = 0.5, retriable_statuses=None):
+        """Ejecuta una función con reintentos y backoff exponencial + jitter.
+        Si la excepción tiene status HTTP 429 o 5xx (configurable), reintenta.
+        """
+        if retriable_statuses is None:
+            retriable_statuses = {429, 500, 502, 503, 504}
+        last_exc = None
+        for attempt in range(max_retries + 1):
+            try:
+                return func()
+            except Exception as exc:  # googleapiclient.errors.HttpError o requests.HTTPError
+                last_exc = exc
+                status_code = None
+                try:
+                    # HttpError de googleapiclient
+                    if hasattr(exc, 'resp') and hasattr(exc.resp, 'status'):
+                        status_code = int(exc.resp.status)
+                    # requests
+                    elif hasattr(exc, 'response') and exc.response is not None:
+                        status_code = int(exc.response.status_code)
+                except Exception:
+                    status_code = None
+
+                if status_code in retriable_statuses and attempt < max_retries:
+                    sleep_s = base_delay * (2 ** attempt) + random.uniform(0, 0.3)
+                    _logger.warning(f"[BACKOFF] Intento {attempt+1}/{max_retries} tras error {status_code}. Durmiendo {sleep_s:.2f}s")
+                    time.sleep(sleep_s)
+                    continue
+                else:
+                    raise
+        # Si sale del bucle sin retorno, relanzar última excepción
+        if last_exc:
+            raise last_exc
+
+    def _download_drive_file_with_backoff(self, service, file_id: str) -> bytes:
+        """Descarga el archivo completo desde Drive usando MediaIoBaseDownload con reintentos."""
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+        def _do_download():
+            request_drive = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request_drive)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            return fh.getvalue()
+        return self._execute_with_backoff(_do_download)
+
+    def _http_get_drive_range(self, access_token: str, file_id: str, range_header: str):
+        """Hace GET directo a Drive con Range y token Bearer, con backoff. Devuelve (status_code, headers, content_bytes)."""
+        import requests
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+        }
+        if range_header:
+            headers['Range'] = range_header
+        def _do_get():
+            resp = requests.get(url, headers=headers, timeout=30)
+            # Considerar 206/200 como válidos; otros pueden lanzar para reintento
+            if resp.status_code in (200, 206):
+                return resp.status_code, resp.headers, resp.content
+            # Levantar HTTPError para que backoff lo maneje
+            resp.raise_for_status()
+        return self._execute_with_backoff(_do_get)
+
+    # --------------------------
+    # Utilidades de listado Drive
+    # --------------------------
+    def _list_drive_files_in_folder(self, service, folder_id: str, recursive: bool = False, page_size: int = 200):
+        """Lista archivos (no carpetas) dentro de una carpeta Drive. Si recursive=True, recorre subcarpetas."""
+        files = []
+        folders_to_visit = [folder_id]
+        while folders_to_visit:
+            current = folders_to_visit.pop(0)
+            page_token = None
+            query = f"'{current}' in parents and trashed=false"
+            while True:
+                result = service.files().list(
+                    q=query,
+                    spaces='drive',
+                    fields='nextPageToken, files(id, name, mimeType, size, md5Checksum)',
+                    pageSize=page_size,
+                    pageToken=page_token
+                ).execute()
+                for f in result.get('files', []):
+                    if f.get('mimeType') == 'application/vnd.google-apps.folder':
+                        if recursive:
+                            folders_to_visit.append(f['id'])
+                    else:
+                        files.append(f)
+                page_token = result.get('nextPageToken')
+                if not page_token:
+                    break
+        return files
+
+    # --------------------------
+    # Previews (conteo/impacto)
+    # --------------------------
+    def preview_migration(self, source_auth_id: int, only_folder_id: str = None,
+                          recursive: bool = True, limit: int = 0):
+        """Devuelve {'count': int, 'total_size': int, 'sample': [str]} para migración desde cuenta origen."""
+        source_auth = self.env['cloud_storage.auth'].sudo().browse(source_auth_id)
+        if not source_auth.exists() or source_auth.state != 'authorized':
+            raise UserError('Autenticación de origen inválida o no autorizada')
+        service = self._get_google_drive_service(source_auth)
+        files = []
+        if only_folder_id:
+            files = self._list_drive_files_in_folder(service, only_folder_id, recursive=recursive)
+            if limit and limit > 0:
+                files = files[:limit]
+        else:
+            # Basado en ir.attachment sincronizados, validar existencia y tamaños
+            domain = [('cloud_sync_status', '=', 'synced'), ('cloud_file_id', '!=', False)]
+            attachments = self.env['ir.attachment'].sudo().search(domain, limit=(limit or 1000))
+            for att in attachments:
+                try:
+                    meta = service.files().get(fileId=att.cloud_file_id, fields='id, name, size').execute()
+                    if meta:
+                        files.append(meta)
+                except Exception:
+                    continue
+        count = len(files)
+        total_size = 0
+        sample = []
+        for f in files:
+            try:
+                total_size += int(f.get('size') or 0)
+                if len(sample) < 10:
+                    sample.append(f.get('name'))
+            except Exception:
+                continue
+        return {'count': count, 'total_size': total_size, 'sample': sample}
+
+    def preview_restore(self, auth_id: int, folder_id: str, recursive: bool = True, limit: int = 0):
+        """Devuelve {'count': int, 'total_size': int, 'sample': [str]} para restauración local desde carpeta."""
+        auth = self.env['cloud_storage.auth'].sudo().browse(auth_id)
+        if not auth.exists() or auth.state != 'authorized':
+            raise UserError('Autenticación inválida o no autorizada')
+        service = self._get_google_drive_service(auth)
+        files = self._list_drive_files_in_folder(service, folder_id, recursive=recursive)
+        if limit and limit > 0:
+            files = files[:limit]
+        count = len(files)
+        total_size = 0
+        sample = []
+        for f in files:
+            try:
+                total_size += int(f.get('size') or 0)
+                if len(sample) < 10:
+                    sample.append(f.get('name'))
+            except Exception:
+                continue
+        return {'count': count, 'total_size': total_size, 'sample': sample}
+
+    # --------------------------
+    # Migración entre cuentas Drive
+    # --------------------------
+    def migrate_attachments_between_auth(self, source_auth_id: int, target_auth_id: int,
+                                         only_folder_id: str = None, target_folder_id: str = None,
+                                         recursive: bool = True, limit: int = 0,
+                                         verify_integrity: bool = True,
+                                         delete_source: bool = False,
+                                         delete_mode: str = 'trash'):
+        """Migra archivos de Drive de una cuenta (source_auth_id) a otra (target_auth_id).
+        - Si only_folder_id está definido, solo migra los archivos de esa carpeta en origen.
+        - Si target_folder_id está definido, sube los archivos a esa carpeta en destino.
+        - Si limit>0, migra como máximo ese número de archivos.
+        Actualiza los `ir.attachment` correspondientes (por `cloud_file_id`).
+        """
+        source_auth = self.env['cloud_storage.auth'].sudo().browse(source_auth_id)
+        target_auth = self.env['cloud_storage.auth'].sudo().browse(target_auth_id)
+        if not source_auth.exists() or not target_auth.exists():
+            raise UserError('Autenticaciones de origen o destino inválidas')
+        source_service = self._get_google_drive_service(source_auth)
+        target_service = self._get_google_drive_service(target_auth)
+
+        # Determinar lista de archivos a migrar
+        files_to_migrate = []
+        if only_folder_id:
+            files_to_migrate = self._list_drive_files_in_folder(source_service, only_folder_id, recursive=recursive)
+        else:
+            # Fallback: usar adjuntos registrados
+            atts_domain = [('cloud_sync_status', '=', 'synced'), ('cloud_file_id', '!=', False)]
+            if limit and limit > 0:
+                attachments = self.env['ir.attachment'].sudo().search(atts_domain, limit=limit)
+            else:
+                attachments = self.env['ir.attachment'].sudo().search(atts_domain)
+            # Validar que el archivo existe en origen
+            for att in attachments:
+                try:
+                    meta = source_service.files().get(fileId=att.cloud_file_id, fields='id, name, mimeType, size, md5Checksum').execute()
+                    if meta:
+                        files_to_migrate.append(meta)
+                except Exception:
+                    continue
+
+        migrated = 0
+        for f in files_to_migrate:
+            try:
+                file_id = f['id']
+                # Encontrar attachment correspondiente por cloud_file_id
+                attachment = self.env['ir.attachment'].sudo().search([('cloud_file_id', '=', file_id)], limit=1)
+                if not attachment:
+                    # Si no existe en Odoo, omitir para no generar huérfanos
+                    continue
+                # Descargar del origen con backoff
+                content_bytes = self._download_drive_file_with_backoff(source_service, file_id)
+                import hashlib
+                try:
+                    source_size = int(f.get('size')) if f.get('size') else len(content_bytes)
+                except Exception:
+                    source_size = len(content_bytes)
+                try:
+                    source_md5 = f.get('md5Checksum') or hashlib.md5(content_bytes).hexdigest()
+                except Exception:
+                    source_md5 = hashlib.md5(content_bytes).hexdigest()
+                # Subir a destino
+                upload_folder = target_folder_id
+                drive_file = self._upload_file_to_drive(target_service, content_bytes, attachment.name, upload_folder)
+
+                # Actualizar attachment a nuevo file id y metadatos
+                update_vals = {
+                    'cloud_file_id': drive_file.get('id'),
+                    'cloud_storage_url': drive_file.get('web_view_link'),
+                    'cloud_md5': drive_file.get('md5'),
+                    'cloud_size_bytes': drive_file.get('size'),
+                    'cloud_synced_date': fields.Datetime.now(),
+                    'cloud_sync_status': 'synced',
+                    'cloud_auth_id': target_auth.id,
+                }
+                attachment.write(update_vals)
+
+                # Verificación post-migración
+                if verify_integrity:
+                    dest_md5 = drive_file.get('md5')
+                    dest_size = drive_file.get('size')
+                    if (dest_md5 and source_md5 and dest_md5 != source_md5) or (dest_size and source_size and int(dest_size) != int(source_size)):
+                        _logger.error(f"[MIGRATION] Verificación fallida para attachment {attachment.id}: src(md5={source_md5}, size={source_size}) vs dst(md5={dest_md5}, size={dest_size})")
+                        # No borrar en origen si la verificación falla
+                        migrated += 1
+                        time.sleep(0.05)
+                        if limit and migrated >= limit:
+                            break
+                        continue
+
+                # Eliminar en origen si se solicita
+                if delete_source:
+                    def _trash():
+                        body = {'trashed': True}
+                        return source_service.files().update(fileId=file_id, body=body, fields='id, trashed').execute()
+                    def _delete():
+                        return source_service.files().delete(fileId=file_id).execute()
+                    try:
+                        if delete_mode == 'delete':
+                            self._execute_with_backoff(_delete)
+                        else:
+                            self._execute_with_backoff(_trash)
+                    except Exception as del_err:
+                        _logger.warning(f"[MIGRATION] No se pudo eliminar/mover a papelera el archivo origen {file_id}: {del_err}")
+                migrated += 1
+                # Pequeña pausa para respetar cuotas
+                time.sleep(0.05)
+                if limit and migrated >= limit:
+                    break
+            except Exception as e:
+                _logger.error(f"[MIGRATION] Error migrando archivo {f.get('id')}: {e}")
+                continue
+        return migrated
+
+    # --------------------------
+    # Restauración local desde carpeta de Drive
+    # --------------------------
+    def restore_local_from_drive_folder(self, auth_id: int, folder_id: str, *, recursive: bool = True,
+                                        link_existing: bool = True, default_res_model: str = None,
+                                        default_res_id: int = None, limit: int = 0):
+        """Restaura localmente archivos de una carpeta de Drive:
+        - Si existe un `ir.attachment` con `cloud_file_id` igual al del archivo, repone `datas` local.
+        - Si no existe y se especifican `default_res_model` y `default_res_id`, crea un `ir.attachment` nuevo.
+        - `recursive=True` recorrerá subcarpetas.
+        - `limit` limita el número de archivos procesados.
+        """
+        auth = self.env['cloud_storage.auth'].sudo().browse(auth_id)
+        if not auth.exists() or auth.state != 'authorized':
+            raise UserError('Autenticación inválida o no autorizada')
+        service = self._get_google_drive_service(auth)
+        files = self._list_drive_files_in_folder(service, folder_id, recursive=recursive)
+        restored = 0
+        import base64
+        for f in files:
+            try:
+                file_id = f['id']
+                name = f.get('name')
+                mimetype = f.get('mimeType') or 'application/octet-stream'
+                content_bytes = self._download_drive_file_with_backoff(service, file_id)
+                b64 = base64.b64encode(content_bytes)
+                attachment = None
+                if link_existing:
+                    attachment = self.env['ir.attachment'].sudo().search([('cloud_file_id', '=', file_id)], limit=1)
+                if attachment:
+                    attachment.write({
+                        'type': 'binary',
+                        'datas': b64,
+                        'mimetype': mimetype,
+                    })
+                else:
+                    vals = {
+                        'name': name,
+                        'type': 'binary',
+                        'datas': b64,
+                        'mimetype': mimetype,
+                        'cloud_file_id': file_id,
+                        'cloud_storage_url': None,
+                        'cloud_sync_status': 'synced',
+                    }
+                    if default_res_model and default_res_id:
+                        vals.update({'res_model': default_res_model, 'res_id': default_res_id})
+                    self.env['ir.attachment'].sudo().create(vals)
+                restored += 1
+                if limit and restored >= limit:
+                    break
+            except Exception as e:
+                _logger.error(f"[RESTORE] Error restaurando archivo {f.get('id')}: {e}")
+                continue
+        return restored
 
     def _create_virtual_attachment(self, record, field_name, file_name):
         """Create a virtual attachment object for image fields"""
@@ -107,7 +435,10 @@ class CloudStorageSyncService(models.Model):
                 'cloud_file_id': drive_file['id'],
                 'cloud_sync_status': 'synced',
                 'cloud_synced_date': datetime.now(),
-                'original_local_path': original_local_path
+                'original_local_path': original_local_path,
+                'cloud_md5': drive_file.get('md5'),
+                'cloud_size_bytes': drive_file.get('size'),
+                'cloud_auth_id': config.auth_id.id if config and config.auth_id else False
             }
             
             # Only clear local data if explicitly configured
@@ -121,9 +452,25 @@ class CloudStorageSyncService(models.Model):
             
             attachment.write(update_values)
             
-            # Optionally delete local file data to save disk space
+            # Verificar integridad antes de borrar local
             if config.delete_local_after_sync:
-                self._delete_local_file(attachment)
+                try:
+                    import hashlib
+                    # Calcular MD5 local si hay contenido
+                    local_md5 = None
+                    if original_file_content:
+                        local_md5 = hashlib.md5(original_file_content).hexdigest()
+                    cloud_md5 = drive_file.get('md5')
+                    # Si se dispone de ambos, validar
+                    if cloud_md5 and local_md5 and cloud_md5 != local_md5:
+                        _logger.error(f"MD5 mismatch for attachment {attachment.name}: local={local_md5}, cloud={cloud_md5}")
+                        # No borrar local, marcar error
+                        attachment.write({'cloud_sync_status': 'error'})
+                    else:
+                        self._delete_local_file(attachment)
+                except Exception as integ_err:
+                    _logger.error(f"Integrity check failed for {attachment.name}: {integ_err}")
+                    attachment.write({'cloud_sync_status': 'error'})
             
             _logger.info(f"Updated attachment {attachment.name} with cloud storage info: {drive_file['web_content_link']}")
             
@@ -142,11 +489,12 @@ class CloudStorageSyncService(models.Model):
             
     def _create_drive_folder(self, service, folder_name, parent_id=None):
         try:
-            existing = service.files().list(
-                q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
-                fields='files(id, name)'
-            ).execute()
-            
+            # Si se recibe parent_id, buscar por nombre dentro de ese padre
+            if parent_id:
+                q = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+            else:
+                q = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            existing = service.files().list(q=q, fields='files(id, name, parents)').execute()
             if existing.get('files'):
                 return existing['files'][0]['id']
             
@@ -183,18 +531,15 @@ class CloudStorageSyncService(models.Model):
             file = service.files().create(
                 body=file_metadata,
                 media_body=media,
-                fields='id,webViewLink,webContentLink'
-            ).execute()
-            
-            service.permissions().create(
-                fileId=file.get('id'),
-                body={'role': 'reader', 'type': 'anyone'}
+                fields='id,webViewLink,webContentLink,md5Checksum,size'
             ).execute()
             
             return {
                 'id': file.get('id'),
                 'web_view_link': file.get('webViewLink'),
-                'web_content_link': file.get('webContentLink')
+                'web_content_link': file.get('webContentLink'),
+                'md5': file.get('md5Checksum'),
+                'size': int(file.get('size')) if file.get('size') else None
             }
             
         except Exception as e:
@@ -469,8 +814,13 @@ class CloudStorageSyncService(models.Model):
                 }
             
             folder_id = None
+            try:
+                config = self.env['cloud_storage.config'].get_active_config()
+            except Exception:
+                config = None
+            root_parent = config.drive_root_folder_id if config and config.drive_root_folder_id else None
             if model_config.drive_folder_name:
-                folder_id = self._create_drive_folder(service, model_config.drive_folder_name)
+                folder_id = self._create_drive_folder(service, model_config.drive_folder_name, parent_id=root_parent)
             
             drive_file = self._upload_file_to_drive(
                 service, file_content, attachment.name, folder_id
@@ -607,6 +957,44 @@ class CloudStorageSyncService(models.Model):
                 continue
         
         return True
+
+    @api.model
+    def reconcile_cloud_references(self, limit=200):
+        """Verifica referencias en Drive y repara metadatos básicos"""
+        _logger.info(f"[RECONCILE] Iniciando reconciliación de hasta {limit} adjuntos")
+        config = self.env['cloud_storage.config'].sudo().get_active_config()
+        if not config or not config.auth_id or config.auth_id.state != 'authorized':
+            _logger.warning("[RECONCILE] No hay configuración activa/autorizada")
+            return 0
+        service = self._get_google_drive_service(config.auth_id)
+        count_ok = 0
+        attachments = self.env['ir.attachment'].search([
+            ('cloud_sync_status', 'in', ['synced', 'error']),
+            ('cloud_file_id', '!=', False)
+        ], limit=limit, order='id desc')
+        for att in attachments:
+            try:
+                meta = service.files().get(fileId=att.cloud_file_id, fields='id,md5Checksum,size,trashed').execute()
+                if not meta or meta.get('trashed'):
+                    _logger.warning(f"[RECONCILE] Archivo faltante/trashed en Drive para attachment {att.id}")
+                    att.write({'cloud_sync_status': 'error'})
+                    continue
+                updates = {}
+                md5 = meta.get('md5Checksum')
+                size = int(meta.get('size')) if meta.get('size') else None
+                if md5 and att.cloud_md5 != md5:
+                    updates['cloud_md5'] = md5
+                if size and att.cloud_size_bytes != size:
+                    updates['cloud_size_bytes'] = size
+                if updates:
+                    att.write(updates)
+                count_ok += 1
+            except Exception as e:
+                _logger.warning(f"[RECONCILE] Error verificando attachment {att.id}: {e}")
+                att.write({'cloud_sync_status': 'error'})
+                continue
+        _logger.info(f"[RECONCILE] Finalizado. Verificados OK: {count_ok}")
+        return count_ok
 
     def complete_sync(self, batch_size=50):
         """Optimized complete sync with efficient filtering and batch processing"""

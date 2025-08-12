@@ -6,20 +6,25 @@
             <field name="name">cloud.storage.config.form</field>
             <field name="model">cloud_storage.config</field>
             <field name="arch" type="xml">
-                <form string="Cloud Storage Configuration">
+                <form string="Cloud Storage Configuration" class="cloud_storage_scope">
                     <header>
-                        <button name="fix_sync_configuration" type="object" string="Fix Configuration" 
-                                class="btn-warning"/>
-                        <button name="action_check_and_refresh_tokens" type="object" string="Check &amp; Refresh Tokens" 
+                        <!-- Removed fix_sync_configuration button due to missing method in some deployments -->
+                        <button name="cloud_storage.action_config_check_tokens" type="action" string="Check &amp; Refresh Tokens" 
                                 class="btn-info"/>
-                        <button name="action_force_token_refresh" type="object" string="Force Refresh Tokens" 
+                        <button name="cloud_storage.action_config_force_refresh" type="action" string="Force Refresh Tokens" 
                                 class="btn-warning"/>
-                        <button name="manual_sync" type="object" string="Quick Sync (500 files)" 
-                                class="oe_highlight" context="{'sync_type': 'manual'}"
+                        <button name="cloud_storage.action_manual_sync" type="action" string="Quick Sync (500 files)" 
+                                class="oe_highlight"
                                 attrs="{'invisible': [('is_active', '=', False)]}"/>
-                        <button name="complete_sync" type="object" string="Complete Sync (All Files)" 
-                                class="btn-primary" context="{'sync_type': 'complete'}"
+                        <button name="cloud_storage.action_config_complete_sync" type="action" string="Complete Sync (All Files)" 
+                                class="btn-primary"
                                 attrs="{'invisible': [('is_active', '=', False)]}"/>
+                        <button name="action_migrate_between_accounts" type="object" string="Migrate Between Accounts"
+                                class="btn-secondary" attrs="{'invisible': [('is_active', '=', False)]}"
+                                help="Migra archivos de la cuenta Drive origen a otra cuenta, actualizando adjuntos"/>
+                        <button name="action_restore_local_from_folder" type="object" string="Restore Local from Folder"
+                                class="btn-secondary" attrs="{'invisible': [('is_active', '=', False)]}"
+                                help="Restaura localmente adjuntos desde una carpeta Drive, creando adjuntos si es necesario"/>
                     </header>
                     <sheet>
                         <div class="oe_title">
@@ -37,6 +42,7 @@
                             <group>
                                 <field name="auto_sync"/>
                                 <field name="sync_frequency" attrs="{'invisible': [('auto_sync', '=', False)]}"/>
+                                 <field name="drive_root_folder_id" placeholder="Drive root folder id"/>
                             </group>
                         </group>
                         <notebook>
@@ -49,7 +55,7 @@
                                         <field name="drive_folder_name"/>
                                         <field name="is_active"/>
                                     </tree>
-                                    <form string="Model Configuration">
+                                    <form string="Model Configuration" class="cloud_storage_scope">
                                         <group>
                                             <field name="model_name"/>
                                             <field name="display_name"/>
@@ -68,7 +74,7 @@
                                         <field name="max_size_mb"/>
                                         <field name="is_active"/>
                                     </tree>
-                                    <form string="File Type Configuration">
+                                    <form string="File Type Configuration" class="cloud_storage_scope">
                                         <group>
                                             <field name="extension"/>
                                             <field name="description"/>
@@ -80,6 +86,56 @@
                             </page>
                         </notebook>
                     </sheet>
+                </form>
+            </field>
+        </record>
+
+        <!-- Wizard: Migrate Between Accounts -->
+        <record id="view_cloud_storage_wizard_migrate_form" model="ir.ui.view">
+            <field name="name">cloud.storage.wizard.migrate.form</field>
+            <field name="model">cloud_storage.wizard.migrate</field>
+            <field name="arch" type="xml">
+                <form string="Migrate Between Drive Accounts" class="cloud_storage_scope">
+                    <group>
+                        <field name="source_auth_id"/>
+                        <field name="target_auth_id"/>
+                        <field name="source_folder_id" placeholder="optional"/>
+                        <field name="target_folder_id" placeholder="optional"/>
+                        <field name="recursive"/>
+                        <field name="limit"/>
+                    <field name="verify_integrity"/>
+                    <field name="delete_source"/>
+                    <field name="delete_mode" attrs="{'invisible': [('delete_source','=',False)]}"/>
+                    </group>
+                    <footer>
+                        <button string="Preview" type="object" name="action_run" class="btn-secondary"/>
+                        <button string="Run" type="object" name="action_run" class="btn-primary" context="{'confirmed': True}"/>
+                        <button string="Cancel" class="btn-secondary" special="cancel"/>
+                    </footer>
+                </form>
+            </field>
+        </record>
+
+        <!-- Wizard: Restore Local From Folder -->
+        <record id="view_cloud_storage_wizard_restore_form" model="ir.ui.view">
+            <field name="name">cloud.storage.wizard.restore.form</field>
+            <field name="model">cloud_storage.wizard.restore</field>
+            <field name="arch" type="xml">
+                <form string="Restore Local From Drive Folder" class="cloud_storage_scope">
+                    <group>
+                        <field name="auth_id"/>
+                        <field name="folder_id"/>
+                        <field name="recursive"/>
+                        <field name="link_existing"/>
+                        <field name="default_res_model" placeholder="e.g. 'res.partner'"/>
+                        <field name="default_res_id"/>
+                        <field name="limit"/>
+                    </group>
+                    <footer>
+                        <button string="Preview" type="object" name="action_run" class="btn-secondary"/>
+                        <button string="Run" type="object" name="action_run" class="btn-primary" context="{'confirmed': True}"/>
+                        <button string="Cancel" class="btn-secondary" special="cancel"/>
+                    </footer>
                 </form>
             </field>
         </record>
@@ -162,12 +218,30 @@
             <field name="view_mode">tree,form</field>
         </record>
 
-        <!-- Manual Sync Action -->
-        <record id="action_manual_sync" model="ir.actions.server">
-            <field name="name">Manual Synchronization</field>
-            <field name="model_id" ref="model_cloud_storage_sync_service"/>
+        <!-- Actions moved to views/actions.xml -->
+
+        <!-- Config: Check & Refresh Tokens Action -->
+        <record id="action_config_check_tokens" model="ir.actions.server">
+            <field name="name">Config: Check &amp; Refresh Tokens</field>
+            <field name="model_id" ref="model_cloud_storage_config"/>
             <field name="state">code</field>
-            <field name="code">action = model.manual_sync()</field>
+            <field name="code">action = model.action_check_and_refresh_tokens()</field>
+        </record>
+
+        <!-- Config: Force Refresh Tokens Action -->
+        <record id="action_config_force_refresh" model="ir.actions.server">
+            <field name="name">Config: Force Refresh Tokens</field>
+            <field name="model_id" ref="model_cloud_storage_config"/>
+            <field name="state">code</field>
+            <field name="code">action = model.action_force_token_refresh()</field>
+        </record>
+
+        <!-- Config: Complete Sync Action -->
+        <record id="action_config_complete_sync" model="ir.actions.server">
+            <field name="name">Config: Complete Sync</field>
+            <field name="model_id" ref="model_cloud_storage_config"/>
+            <field name="state">code</field>
+            <field name="code">action = model.complete_sync()</field>
         </record>
     </data>
 </odoo>

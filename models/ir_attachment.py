@@ -26,6 +26,9 @@ class IrAttachment(models.Model):
     ], default='local', string='Cloud Sync Status')
     cloud_synced_date = fields.Datetime('Last Synced', help="When the file was last synced to cloud")
     original_local_path = fields.Char('Original Local Path', help="Original local file path before sync")
+    cloud_md5 = fields.Char('Cloud MD5', help="MD5 checksum of the file stored in cloud")
+    cloud_size_bytes = fields.Integer('Cloud Size (Bytes)', help="Size in bytes of the file stored in cloud")
+    cloud_auth_id = fields.Many2one('cloud_storage.auth', 'Cloud Auth', help="Authentication used to access this file in cloud")
     
     # Campos de cache para optimización
     cloud_cache_key = fields.Char('Cache Key', help="Key for caching downloaded content")
@@ -143,9 +146,9 @@ class IrAttachment(models.Model):
     def _download_from_cloud(self, use_cache=True):
         """Download file from cloud with caching support"""
         _logger.info(f"[CLOUD_DOWNLOAD] Starting download for {self.name}")
-        
-        if not self.cloud_storage_url:
-            _logger.info(f"[CLOUD_DOWNLOAD] No cloud storage URL for {self.name}")
+
+        if not self.cloud_file_id:
+            _logger.info(f"[CLOUD_DOWNLOAD] No cloud_file_id for {self.name}")
             return None
         
         # Check if cloud access is enabled in configuration
@@ -170,39 +173,38 @@ class IrAttachment(models.Model):
                 return cached_content
         
         try:
-            import requests
             import base64
-            
-            # Convert cloud_storage_url to direct download link
-            if 'drive.google.com/file/d/' in self.cloud_storage_url:
-                file_id = self.cloud_file_id or self.cloud_storage_url.split('/d/')[1].split('/')[0]
-                download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            else:
-                download_url = self.cloud_storage_url
-            
-            _logger.info(f"[CLOUD_DOWNLOAD] Downloading {self.name} from {download_url}")
-            response = requests.get(download_url, timeout=30)
-            
-            if response.status_code == 200:
-                content = base64.b64encode(response.content)
-                
-                # Store in cache
-                if use_cache:
-                    self._store_in_cache(cache_key, content)
-                
-                # Update access time (async)
-                self.env.cr.execute(
-                    "UPDATE ir_attachment SET cloud_last_accessed = %s WHERE id = %s",
-                    (fields.Datetime.now(), self.id)
-                )
-                
-                return content
-            else:
-                _logger.warning(f"[CLOUD_DOWNLOAD] Failed to download {self.name}: HTTP {response.status_code}")
+            # Usar la API autenticada de Drive
+            # Preferir la autenticación asociada al adjunto; fallback a configuración activa
+            auth = self.cloud_auth_id
+            if not auth or auth.state != 'authorized':
+                config = self.env['cloud_storage.config'].sudo().get_active_config()
+                auth = config.auth_id if config else False
+            if not auth or auth.state != 'authorized':
+                _logger.warning(f"[CLOUD_DOWNLOAD] No auth available to download {self.name}")
                 return None
-                
+            service = self.env['cloud_storage.sync.service']._get_google_drive_service(auth)
+            from googleapiclient.http import MediaIoBaseDownload
+            import io
+            request_drive = service.files().get_media(fileId=self.cloud_file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request_drive)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            content_bytes = fh.getvalue()
+            content = base64.b64encode(content_bytes)
+            # Store in cache
+            if use_cache:
+                self._store_in_cache(cache_key, content)
+            # Update access time (async)
+            self.env.cr.execute(
+                "UPDATE ir_attachment SET cloud_last_accessed = %s WHERE id = %s",
+                (fields.Datetime.now(), self.id)
+            )
+            return content
         except Exception as e:
-            _logger.error(f"[CLOUD_DOWNLOAD] Error downloading {self.name}: {str(e)}")
+            _logger.error(f"[CLOUD_DOWNLOAD] Error downloading {self.name} via Drive API: {str(e)}")
             return None
     
     def _get_datas(self):
@@ -212,8 +214,8 @@ class IrAttachment(models.Model):
         _logger.error(f"[CLOUD_STORAGE_TEST] Status - cloud_sync_status: {getattr(self, 'cloud_sync_status', 'NO_STATUS')}, type: {getattr(self, 'type', 'NO_TYPE')}")
         _logger.error(f"[CLOUD_STORAGE_TEST] has cloud_storage_url: {bool(getattr(self, 'cloud_storage_url', False))}")
         
-        # If this attachment is synced to cloud and we have a cloud URL
-        if self.cloud_sync_status == 'synced' and self.cloud_storage_url:
+        # If this attachment is synced to cloud and we have a cloud file id
+        if self.cloud_sync_status == 'synced' and self.cloud_file_id:
             _logger.error(f"[CLOUD_STORAGE_TEST] Attempting cloud download for {getattr(self, 'name', 'NO_NAME')}")
             content = self._download_from_cloud(use_cache=True)
             if content is not None:
@@ -234,7 +236,7 @@ class IrAttachment(models.Model):
             _logger.debug(f"[CLOUD_STORAGE] _compute_raw called for {len(self)} attachment(s)")
         
         for attach in self:
-            if attach.cloud_sync_status == 'synced' and attach.cloud_storage_url:
+            if attach.cloud_sync_status == 'synced' and attach.cloud_file_id:
                 # Get content from cache first, then decode from base64 to raw bytes
                 content_b64 = attach._download_from_cloud(use_cache=True)
                 if content_b64 is not None:
@@ -256,7 +258,7 @@ class IrAttachment(models.Model):
         # Try to find attachment by store_fname
         attachment = self.search([('store_fname', '=', fname)], limit=1)
         
-        if attachment and attachment.cloud_sync_status == 'synced' and attachment.cloud_storage_url:
+        if attachment and attachment.cloud_sync_status == 'synced' and attachment.cloud_file_id:
             # Get content from cache and decode to raw bytes
             content_b64 = attachment._download_from_cloud(use_cache=True)
             if content_b64 is not None:

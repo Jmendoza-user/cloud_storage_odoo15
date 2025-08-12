@@ -6,7 +6,7 @@
             <field name="name">cloud.storage.sync.log.form</field>
             <field name="model">cloud_storage.sync.log</field>
             <field name="arch" type="xml">
-                <form string="Sync Log" create="false" edit="false">
+                <form string="Sync Log" create="false" edit="false" class="cloud_storage_scope">
                     <header>
                         <button name="action_retry_sync" type="object" string="Retry Sync" 
                                 class="oe_highlight" attrs="{'invisible': [('status', '=', 'success')]}"/>

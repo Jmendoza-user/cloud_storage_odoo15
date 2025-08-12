@@ -27,6 +27,7 @@
         'security/ir.model.access.csv',
         'data/cron_data.xml',
         'views/auth_views.xml',
+        'views/actions.xml',
         'views/config_views.xml',
         'views/sync_log_views.xml',
         'views/menu_views.xml',

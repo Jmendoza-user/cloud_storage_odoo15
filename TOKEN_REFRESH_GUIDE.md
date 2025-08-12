@@ -137,3 +137,5 @@ Estas mejoras son compatibles con:
 - Los tokens de refresco no expiran a menos que se revoquen manualmente
 - El sistema intenta refrescar automáticamente antes de que expire el token
 - Si el refresco falla, el estado cambia a 'error' o 'expired'
+
+

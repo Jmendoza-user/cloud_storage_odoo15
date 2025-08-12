@@ -27,4 +27,18 @@
             <field name="doall" eval="False"/>
         </record>
     </data>
+    <data>
+        <!-- Cloud Storage Reconciliation Cron Job -->
+        <record id="cron_cloud_storage_reconcile" model="ir.cron">
+            <field name="name">Cloud Storage: Reconcile References</field>
+            <field name="model_id" ref="model_cloud_storage_sync_service"/>
+            <field name="state">code</field>
+            <field name="code">model.reconcile_cloud_references(200)</field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+            <field name="numbercall">-1</field>
+            <field name="active" eval="True"/>
+            <field name="doall" eval="False"/>
+        </record>
+    </data>
 </odoo>
