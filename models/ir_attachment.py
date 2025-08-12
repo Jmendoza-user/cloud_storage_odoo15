@@ -145,15 +145,15 @@ class IrAttachment(models.Model):
     
     def _download_from_cloud(self, use_cache=True):
         """Download file from cloud with caching support"""
-        _logger.info(f"[CLOUD_DOWNLOAD] Starting download for {self.name}")
+        _logger.debug(f"[CLOUD_DOWNLOAD] Starting download for {self.name}")
 
         if not self.cloud_file_id:
-            _logger.info(f"[CLOUD_DOWNLOAD] No cloud_file_id for {self.name}")
+            _logger.debug(f"[CLOUD_DOWNLOAD] No cloud_file_id for {self.name}")
             return None
         
         # Check if cloud access is enabled in configuration
         config = self.env['cloud_storage.config'].get_active_config()
-        _logger.info(f"[CLOUD_DOWNLOAD] Config found: {bool(config)}, enable_cloud_access: {config.enable_cloud_access if config else 'N/A'}")
+        _logger.debug(f"[CLOUD_DOWNLOAD] Config found: {bool(config)}, enable_cloud_access: {config.enable_cloud_access if config else 'N/A'}")
         
         if not config or not config.enable_cloud_access:
             _logger.warning(f"[CLOUD_DOWNLOAD] Cloud access disabled for {self.name}")
@@ -209,29 +209,34 @@ class IrAttachment(models.Model):
     
     def _get_datas(self):
         """Optimized _get_datas with caching support"""
-        # Temporary verbose logging to debug the issue - TESTING
-        _logger.error(f"[CLOUD_STORAGE_TEST] _get_datas called for attachment ID: {self.id}, name: {getattr(self, 'name', 'NO_NAME')}")
-        _logger.error(f"[CLOUD_STORAGE_TEST] Status - cloud_sync_status: {getattr(self, 'cloud_sync_status', 'NO_STATUS')}, type: {getattr(self, 'type', 'NO_TYPE')}")
-        _logger.error(f"[CLOUD_STORAGE_TEST] has cloud_storage_url: {bool(getattr(self, 'cloud_storage_url', False))}")
+        # Fast path: evitar overhead si no hay config activa o cloud deshabilitado
+        config = self.env['cloud_storage.config'].get_active_config()
+        if not config or not getattr(config, 'enable_cloud_access', False):
+            return super()._get_datas()
+        _logger.debug(f"[CLOUD_STORAGE] _get_datas called for attachment ID: {self.id}")
         
         # If this attachment is synced to cloud and we have a cloud file id
         if self.cloud_sync_status == 'synced' and self.cloud_file_id:
-            _logger.error(f"[CLOUD_STORAGE_TEST] Attempting cloud download for {getattr(self, 'name', 'NO_NAME')}")
+            _logger.debug(f"[CLOUD_STORAGE] Attempting cloud download for {getattr(self, 'name', 'NO_NAME')}")
             content = self._download_from_cloud(use_cache=True)
             if content is not None:
-                _logger.error(f"[CLOUD_STORAGE_TEST] Successfully got content from cloud for {getattr(self, 'name', 'NO_NAME')}")
+                _logger.debug(f"[CLOUD_STORAGE] Got content from cloud for {getattr(self, 'name', 'NO_NAME')}")
                 return content
             
             # Fallback to original method if cloud download fails
-            _logger.error(f"[CLOUD_STORAGE_TEST] Cloud download failed for {getattr(self, 'name', 'NO_NAME')}, using fallback")
+            _logger.debug(f"[CLOUD_STORAGE] Cloud download failed for {getattr(self, 'name', 'NO_NAME')}, using fallback")
             return super()._get_datas()
         
-        _logger.error(f"[CLOUD_STORAGE_TEST] Using original _get_datas for {getattr(self, 'name', 'NO_NAME')}")
+        _logger.debug(f"[CLOUD_STORAGE] Using original _get_datas for {getattr(self, 'name', 'NO_NAME')}")
         # Use original method for non-synced attachments
         return super()._get_datas()
     
     def _compute_raw(self):
         """Optimized _compute_raw with caching support"""
+        # Fast path: si cloud está deshabilitado, delegar al método original
+        config = self.env['cloud_storage.config'].get_active_config()
+        if not config or not getattr(config, 'enable_cloud_access', False):
+            return super()._compute_raw()
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug(f"[CLOUD_STORAGE] _compute_raw called for {len(self)} attachment(s)")
         
@@ -255,6 +260,22 @@ class IrAttachment(models.Model):
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug(f"[CLOUD_STORAGE] _file_read called for fname: {fname}")
         
+        # Primer intento: leer directamente desde filestore (rápido y sin queries)
+        try:
+            content = super()._file_read(fname)
+            if content:
+                return content
+        except Exception:
+            # Ignorar y probar ruta cloud
+            pass
+
+        # Fast path: si no hay configuración activa o el acceso cloud está deshabilitado,
+        # no intentes resolución cloud ni busques en DB
+        config = self.env['cloud_storage.config'].get_active_config()
+        if not config or not getattr(config, 'enable_cloud_access', False):
+            # No contenido y cloud deshabilitado: devolver tal cual
+            return content if 'content' in locals() else b''
+
         # Try to find attachment by store_fname
         attachment = self.search([('store_fname', '=', fname)], limit=1)
         
@@ -266,4 +287,4 @@ class IrAttachment(models.Model):
                 return base64.b64decode(content_b64)
         
         # Fallback to original method
-        return super()._file_read(fname)
+        return content if 'content' in locals() and content else super()._file_read(fname)
