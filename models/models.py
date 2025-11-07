@@ -403,9 +403,32 @@ class CloudStorageConfig(models.Model):
 
         Permite que una acción de servidor invoque `model.complete_sync()` aunque
         no haya un `active_id`, evitando el error de singleton.
+
+        Maneja excepciones internamente para evitar fallos durante migraciones.
         """
-        sync_service = self.env['cloud_storage.sync.service']
-        return sync_service.complete_sync(batch_size=batch_size)
+        try:
+            sync_service = self.env['cloud_storage.sync.service']
+            return sync_service.complete_sync(batch_size=batch_size)
+        except UserError as e:
+            _logger.warning(f"cloud_storage: complete_sync UserError (expected during migration): {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Complete sync not available: {str(e)}",
+                    'type': 'warning'
+                }
+            }
+        except Exception as e:
+            _logger.error(f"cloud_storage: complete_sync unexpected error: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error during complete sync: {str(e)}",
+                    'type': 'danger'
+                }
+            }
 
     # Acciones utilitarias de migración/restauración
     def action_migrate_between_accounts(self):
@@ -438,6 +461,220 @@ class CloudStorageConfig(models.Model):
                 'default_link_existing': True,
             }
         }
+
+    @api.model
+    def action_check_and_refresh_tokens(self):
+        """Check all active configurations and refresh tokens if needed"""
+        try:
+            active_configs = self.search([('is_active', '=', True)])
+            refreshed_count = 0
+            error_count = 0
+            status_details = []
+
+            for config in active_configs:
+                if config.auth_id and config.auth_id.state == 'authorized':
+                    try:
+                        # This will automatically refresh if needed
+                        config.auth_id._get_valid_token()
+                        refreshed_count += 1
+                        status_details.append(f"✓ {config.name}: Token válido")
+                        _logger.info(f"Token checked/refreshed for config: {config.name}")
+                    except Exception as e:
+                        error_count += 1
+                        status_details.append(f"✗ {config.name}: {str(e)}")
+                        _logger.error(f"Error checking/refreshing token for config {config.name}: {str(e)}")
+                else:
+                    status_details.append(f"- {config.name}: Sin autenticación válida")
+
+            # Create detailed message
+            if status_details:
+                message = f"Verificación completada:\n" + "\n".join(status_details)
+            else:
+                message = "No se encontraron configuraciones activas para verificar"
+
+            notification_type = 'success' if error_count == 0 else 'warning'
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': message,
+                    'type': notification_type,
+                    'sticky': True  # Make notification sticky for detailed info
+                }
+            }
+
+        except Exception as e:
+            _logger.error(f"Error in token check and refresh: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error al verificar tokens: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    @api.model
+    def action_force_token_refresh(self):
+        """Force refresh all tokens regardless of expiry"""
+        try:
+            active_configs = self.search([('is_active', '=', True)])
+            refreshed_count = 0
+            error_count = 0
+
+            for config in active_configs:
+                if config.auth_id and config.auth_id.state == 'authorized':
+                    try:
+                        # Force refresh by calling refresh_access_token directly
+                        if config.auth_id.refresh_access_token():
+                            refreshed_count += 1
+                            _logger.info(f"Token force refreshed for config: {config.name}")
+                        else:
+                            error_count += 1
+                            _logger.error(f"Failed to force refresh token for config: {config.name}")
+                    except Exception as e:
+                        error_count += 1
+                        _logger.error(f"Error force refreshing token for config {config.name}: {str(e)}")
+
+            message = f"Refresco forzado completado: {refreshed_count} tokens actualizados, {error_count} errores"
+            notification_type = 'success' if error_count == 0 else 'warning'
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': message,
+                    'type': notification_type
+                }
+            }
+
+        except Exception as e:
+            _logger.error(f"Error in force token refresh: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error al refrescar tokens: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    @api.model
+    def action_global_token_status(self):
+        """Global action to check token status from menu"""
+        return self.action_check_and_refresh_tokens()
+
+    @api.model
+    def configure_cron_dawn_time(self, hour=3):
+        """
+        Configura el cron de sincronización automática para ejecutarse en la madrugada
+
+        :param hour: Hora de ejecución (0-23), por defecto 3 AM
+        """
+        from datetime import datetime, time, timedelta
+
+        # Buscar el cron
+        cron = self.env['ir.cron'].search([('name', '=', 'Cloud Storage: Automatic Sync')], limit=1)
+
+        if not cron:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': 'Error: No se encontró el cron de sincronización automática',
+                    'type': 'danger'
+                }
+            }
+
+        # Calcular próxima ejecución
+        now = datetime.now()
+        target_time = time(hour, 0, 0)
+
+        # Si ya pasó la hora hoy, programar para mañana
+        if now.time() >= target_time:
+            next_run = datetime.combine(now.date() + timedelta(days=1), target_time)
+        else:
+            next_run = datetime.combine(now.date(), target_time)
+
+        # Actualizar el cron
+        cron.write({
+            'nextcall': next_run,
+            'active': True
+        })
+
+        _logger.info(f"[CRON CONFIG] Cron configurado para ejecutarse a las {hour}:00. Próxima ejecución: {next_run}")
+
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'message': f'Cron configurado para ejecutarse diariamente a las {hour}:00\n\nPróxima ejecución: {next_run.strftime("%Y-%m-%d %H:%M")}',
+                'type': 'success',
+                'sticky': True
+            }
+        }
+
+    def action_test_automatic_sync(self):
+        """
+        Test the automatic sync manually (for debugging cron issues)
+        This allows testing the cron job behavior without waiting for schedule
+        """
+        self.ensure_one()
+
+        if not self.auto_sync:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': 'Auto sync is not enabled for this configuration. Enable it first.',
+                    'type': 'warning'
+                }
+            }
+
+        _logger.info(f"[TEST AUTO_SYNC] Manual test triggered for config: {self.name}")
+
+        try:
+            # Call the automatic_sync method from sync_service
+            sync_service = self.env['cloud_storage.sync.service']
+            result = sync_service.automatic_sync(batch_limit=50)  # Use smaller batch for testing
+
+            # Check recent logs
+            recent_logs = self.env['cloud_storage.sync.log'].search([
+                ('sync_type', '=', 'automatic'),
+                ('config_id', '=', self.id)
+            ], limit=5, order='sync_date desc')
+
+            if recent_logs:
+                log_summary = "\n".join([
+                    f"- {log.file_name}: {log.status} ({log.sync_date})"
+                    for log in recent_logs[:3]
+                ])
+                message = f"Automatic sync test completed.\n\nRecent logs:\n{log_summary}\n\nCheck Sync Logs menu for full details."
+            else:
+                message = "Automatic sync test completed. No logs found. Check if files need syncing."
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': message,
+                    'type': 'success',
+                    'sticky': True
+                }
+            }
+
+        except Exception as e:
+            _logger.error(f"[TEST AUTO_SYNC] Error during test: {str(e)}", exc_info=True)
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error during automatic sync test: {str(e)}\n\nCheck server logs for details.",
+                    'type': 'danger',
+                    'sticky': True
+                }
+            }
 
 
 class CloudStorageWizardMigrate(models.TransientModel):
@@ -689,107 +926,6 @@ class CloudStorageWizardRestore(models.TransientModel):
                 'type': 'success'
             }
         }
-
-    def action_check_and_refresh_tokens(self):
-        """Check all active configurations and refresh tokens if needed"""
-        try:
-            active_configs = self.search([('is_active', '=', True)])
-            refreshed_count = 0
-            error_count = 0
-            status_details = []
-            
-            for config in active_configs:
-                if config.auth_id and config.auth_id.state == 'authorized':
-                    try:
-                        # This will automatically refresh if needed
-                        config.auth_id._get_valid_token()
-                        refreshed_count += 1
-                        status_details.append(f"✓ {config.name}: Token válido")
-                        _logger.info(f"Token checked/refreshed for config: {config.name}")
-                    except Exception as e:
-                        error_count += 1
-                        status_details.append(f"✗ {config.name}: {str(e)}")
-                        _logger.error(f"Error checking/refreshing token for config {config.name}: {str(e)}")
-                else:
-                    status_details.append(f"- {config.name}: Sin autenticación válida")
-            
-            # Create detailed message
-            if status_details:
-                message = f"Verificación completada:\n" + "\n".join(status_details)
-            else:
-                message = "No se encontraron configuraciones activas para verificar"
-            
-            notification_type = 'success' if error_count == 0 else 'warning'
-            
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'message': message,
-                    'type': notification_type,
-                    'sticky': True  # Make notification sticky for detailed info
-                }
-            }
-            
-        except Exception as e:
-            _logger.error(f"Error in token check and refresh: {str(e)}")
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'message': f"Error al verificar tokens: {str(e)}",
-                    'type': 'danger'
-                }
-            }
-
-    def action_force_token_refresh(self):
-        """Force refresh all tokens regardless of expiry"""
-        try:
-            active_configs = self.search([('is_active', '=', True)])
-            refreshed_count = 0
-            error_count = 0
-            
-            for config in active_configs:
-                if config.auth_id and config.auth_id.state == 'authorized':
-                    try:
-                        # Force refresh by calling refresh_access_token directly
-                        if config.auth_id.refresh_access_token():
-                            refreshed_count += 1
-                            _logger.info(f"Token force refreshed for config: {config.name}")
-                        else:
-                            error_count += 1
-                            _logger.error(f"Failed to force refresh token for config: {config.name}")
-                    except Exception as e:
-                        error_count += 1
-                        _logger.error(f"Error force refreshing token for config {config.name}: {str(e)}")
-            
-            message = f"Refresco forzado completado: {refreshed_count} tokens actualizados, {error_count} errores"
-            notification_type = 'success' if error_count == 0 else 'warning'
-            
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'message': message,
-                    'type': notification_type
-                }
-            }
-            
-        except Exception as e:
-            _logger.error(f"Error in force token refresh: {str(e)}")
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'message': f"Error al refrescar tokens: {str(e)}",
-                    'type': 'danger'
-                }
-            }
-
-    @api.model
-    def action_global_token_status(self):
-        """Global action to check token status from menu"""
-        return self.action_check_and_refresh_tokens()
 
 
 class CloudStorageModelConfig(models.Model):

@@ -8,78 +8,83 @@
             <field name="arch" type="xml">
                 <form string="Cloud Storage Configuration" class="cloud_storage_scope">
                     <header>
-                        <!-- Removed fix_sync_configuration button due to missing method in some deployments -->
-                        <button name="cloud_storage.action_config_check_tokens" type="action" string="Check &amp; Refresh Tokens" 
-                                class="btn-info"/>
-                        <button name="cloud_storage.action_config_force_refresh" type="action" string="Force Refresh Tokens" 
-                                class="btn-warning"/>
-                        <button name="cloud_storage.action_manual_sync" type="action" string="Quick Sync (500 files)" 
+                        <!-- Botones principales de sincronización -->
+                        <button name="cloud_storage.action_manual_sync" type="action" string="Sincronizar Ahora"
                                 class="oe_highlight"
-                                attrs="{'invisible': [('is_active', '=', False)]}"/>
-                        <button name="cloud_storage.action_config_complete_sync" type="action" string="Complete Sync (All Files)" 
+                                attrs="{'invisible': [('is_active', '=', False)]}"
+                                help="Sincroniza hasta 500 archivos pendientes"/>
+                        <button name="cloud_storage.action_config_complete_sync" type="action" string="Sincronización Completa"
                                 class="btn-primary"
-                                attrs="{'invisible': [('is_active', '=', False)]}"/>
-                        <button name="action_migrate_between_accounts" type="object" string="Migrate Between Accounts"
+                                attrs="{'invisible': [('is_active', '=', False)]}"
+                                help="Sincroniza todos los archivos pendientes (puede tardar más tiempo)"/>
+
+                        <!-- Botones de gestión de tokens -->
+                        <button name="cloud_storage.action_config_check_tokens" type="action" string="Verificar Tokens"
+                                class="btn-info"
+                                help="Verifica y refresca automáticamente los tokens de autenticación"/>
+
+                        <!-- Herramientas avanzadas -->
+                        <button name="action_migrate_between_accounts" type="object" string="Migrar entre Cuentas"
                                 class="btn-secondary" attrs="{'invisible': [('is_active', '=', False)]}"
-                                help="Migra archivos de la cuenta Drive origen a otra cuenta, actualizando adjuntos"/>
-                        <button name="action_restore_local_from_folder" type="object" string="Restore Local from Folder"
+                                help="Migra archivos entre diferentes cuentas de Google Drive"/>
+                        <button name="action_restore_local_from_folder" type="object" string="Restaurar desde Drive"
                                 class="btn-secondary" attrs="{'invisible': [('is_active', '=', False)]}"
-                                help="Restaura localmente adjuntos desde una carpeta Drive, creando adjuntos si es necesario"/>
+                                help="Restaura archivos localmente desde una carpeta de Google Drive"/>
                     </header>
                     <sheet>
                         <div class="oe_title">
                             <h1>
-                                <field name="name" placeholder="Configuration Name"/>
+                                <field name="name" placeholder="Nombre de la Configuración"/>
                             </h1>
                         </div>
                         <group>
-                            <group>
-                                <field name="auth_id" options="{'no_create': True}"/>
-                                <field name="is_active"/>
-                                <field name="replace_local_with_cloud"/>
-                                <field name="delete_local_after_sync"/>
+                            <group string="Autenticación y Estado">
+                                <field name="auth_id" string="Autenticación" options="{'no_create': True}"/>
+                                <field name="is_active" string="Activo"/>
+                                <field name="replace_local_with_cloud" string="Reemplazar Local con URLs Cloud"/>
+                                <field name="delete_local_after_sync" string="Eliminar Archivos Locales Después de Sincronizar"/>
                             </group>
-                            <group>
-                                <field name="auto_sync"/>
-                                <field name="sync_frequency" attrs="{'invisible': [('auto_sync', '=', False)]}"/>
-                                 <field name="drive_root_folder_id" placeholder="Drive root folder id"/>
+                            <group string="Sincronización Automática">
+                                <field name="auto_sync" string="Sincronización Automática"/>
+                                <field name="sync_frequency" string="Frecuencia de Sincronización" attrs="{'invisible': [('auto_sync', '=', False)]}"/>
+                                 <field name="drive_root_folder_id" string="ID Carpeta Raíz de Drive" placeholder="ID de carpeta raíz (opcional)"/>
                             </group>
                         </group>
                         <notebook>
-                            <page string="Model Configuration">
+                            <page string="Configuración de Modelos">
                                 <field name="model_config_ids" nolabel="1">
-                                    <tree string="Models to Sync" editable="bottom">
-                                        <field name="model_name"/>
-                                        <field name="display_name"/>
-                                        <field name="field_name"/>
-                                        <field name="drive_folder_name"/>
-                                        <field name="is_active"/>
+                                    <tree string="Modelos a Sincronizar" editable="bottom">
+                                        <field name="model_name" string="Nombre del Modelo"/>
+                                        <field name="display_name" string="Nombre para Mostrar"/>
+                                        <field name="field_name" string="Campo de Adjunto"/>
+                                        <field name="drive_folder_name" string="Nombre de Carpeta en Drive"/>
+                                        <field name="is_active" string="Activo"/>
                                     </tree>
-                                    <form string="Model Configuration" class="cloud_storage_scope">
+                                    <form string="Configuración de Modelo" class="cloud_storage_scope">
                                         <group>
-                                            <field name="model_name"/>
-                                            <field name="display_name"/>
-                                            <field name="field_name"/>
-                                            <field name="drive_folder_name"/>
-                                            <field name="is_active"/>
+                                            <field name="model_name" string="Nombre del Modelo"/>
+                                            <field name="display_name" string="Nombre para Mostrar"/>
+                                            <field name="field_name" string="Campo de Adjunto"/>
+                                            <field name="drive_folder_name" string="Nombre de Carpeta en Drive"/>
+                                            <field name="is_active" string="Activo"/>
                                         </group>
                                     </form>
                                 </field>
                             </page>
-                            <page string="File Types">
+                            <page string="Tipos de Archivo">
                                 <field name="file_type_ids" nolabel="1">
-                                    <tree string="Allowed File Types" editable="bottom">
-                                        <field name="extension"/>
-                                        <field name="description"/>
-                                        <field name="max_size_mb"/>
-                                        <field name="is_active"/>
+                                    <tree string="Tipos de Archivo Permitidos" editable="bottom">
+                                        <field name="extension" string="Extensión"/>
+                                        <field name="description" string="Descripción"/>
+                                        <field name="max_size_mb" string="Tamaño Máx. (MB)"/>
+                                        <field name="is_active" string="Activo"/>
                                     </tree>
-                                    <form string="File Type Configuration" class="cloud_storage_scope">
+                                    <form string="Configuración de Tipo de Archivo" class="cloud_storage_scope">
                                         <group>
-                                            <field name="extension"/>
-                                            <field name="description"/>
-                                            <field name="max_size_mb"/>
-                                            <field name="is_active"/>
+                                            <field name="extension" string="Extensión"/>
+                                            <field name="description" string="Descripción"/>
+                                            <field name="max_size_mb" string="Tamaño Máx. (MB)"/>
+                                            <field name="is_active" string="Activo"/>
                                         </group>
                                     </form>
                                 </field>
@@ -95,22 +100,22 @@
             <field name="name">cloud.storage.wizard.migrate.form</field>
             <field name="model">cloud_storage.wizard.migrate</field>
             <field name="arch" type="xml">
-                <form string="Migrate Between Drive Accounts" class="cloud_storage_scope">
+                <form string="Migrar entre Cuentas de Drive" class="cloud_storage_scope">
                     <group>
-                        <field name="source_auth_id"/>
-                        <field name="target_auth_id"/>
-                        <field name="source_folder_id" placeholder="optional"/>
-                        <field name="target_folder_id" placeholder="optional"/>
-                        <field name="recursive"/>
-                        <field name="limit"/>
-                    <field name="verify_integrity"/>
-                    <field name="delete_source"/>
-                    <field name="delete_mode" attrs="{'invisible': [('delete_source','=',False)]}"/>
+                        <field name="source_auth_id" string="Autenticación Origen"/>
+                        <field name="target_auth_id" string="Autenticación Destino"/>
+                        <field name="source_folder_id" string="ID Carpeta Origen" placeholder="opcional"/>
+                        <field name="target_folder_id" string="ID Carpeta Destino" placeholder="opcional"/>
+                        <field name="recursive" string="Recursivo"/>
+                        <field name="limit" string="Límite de Archivos"/>
+                    <field name="verify_integrity" string="Verificar Integridad"/>
+                    <field name="delete_source" string="Eliminar Archivos Origen"/>
+                    <field name="delete_mode" string="Modo de Eliminación" attrs="{'invisible': [('delete_source','=',False)]}"/>
                     </group>
                     <footer>
-                        <button string="Preview" type="object" name="action_run" class="btn-secondary"/>
-                        <button string="Run" type="object" name="action_run" class="btn-primary" context="{'confirmed': True}"/>
-                        <button string="Cancel" class="btn-secondary" special="cancel"/>
+                        <button string="Vista Previa" type="object" name="action_run" class="btn-secondary"/>
+                        <button string="Ejecutar" type="object" name="action_run" class="btn-primary" context="{'confirmed': True}"/>
+                        <button string="Cancelar" class="btn-secondary" special="cancel"/>
                     </footer>
                 </form>
             </field>
@@ -121,20 +126,20 @@
             <field name="name">cloud.storage.wizard.restore.form</field>
             <field name="model">cloud_storage.wizard.restore</field>
             <field name="arch" type="xml">
-                <form string="Restore Local From Drive Folder" class="cloud_storage_scope">
+                <form string="Restaurar Archivos desde Drive" class="cloud_storage_scope">
                     <group>
-                        <field name="auth_id"/>
-                        <field name="folder_id"/>
-                        <field name="recursive"/>
-                        <field name="link_existing"/>
-                        <field name="default_res_model" placeholder="e.g. 'res.partner'"/>
-                        <field name="default_res_id"/>
-                        <field name="limit"/>
+                        <field name="auth_id" string="Autenticación"/>
+                        <field name="folder_id" string="ID de Carpeta Drive"/>
+                        <field name="recursive" string="Recursivo"/>
+                        <field name="link_existing" string="Vincular Existentes"/>
+                        <field name="default_res_model" string="Modelo por Defecto" placeholder="ej. 'res.partner'"/>
+                        <field name="default_res_id" string="ID de Registro por Defecto"/>
+                        <field name="limit" string="Límite de Archivos"/>
                     </group>
                     <footer>
-                        <button string="Preview" type="object" name="action_run" class="btn-secondary"/>
-                        <button string="Run" type="object" name="action_run" class="btn-primary" context="{'confirmed': True}"/>
-                        <button string="Cancel" class="btn-secondary" special="cancel"/>
+                        <button string="Vista Previa" type="object" name="action_run" class="btn-secondary"/>
+                        <button string="Ejecutar" type="object" name="action_run" class="btn-primary" context="{'confirmed': True}"/>
+                        <button string="Cancelar" class="btn-secondary" special="cancel"/>
                     </footer>
                 </form>
             </field>
@@ -145,12 +150,12 @@
             <field name="name">cloud.storage.config.tree</field>
             <field name="model">cloud_storage.config</field>
             <field name="arch" type="xml">
-                <tree string="Cloud Storage Configurations">
-                    <field name="name"/>
-                    <field name="auth_id"/>
-                    <field name="auto_sync"/>
-                    <field name="sync_frequency"/>
-                    <field name="is_active"/>
+                <tree string="Configuraciones de Cloud Storage">
+                    <field name="name" string="Nombre"/>
+                    <field name="auth_id" string="Autenticación"/>
+                    <field name="auto_sync" string="Sync Automático"/>
+                    <field name="sync_frequency" string="Frecuencia"/>
+                    <field name="is_active" string="Activo"/>
                 </tree>
             </field>
         </record>

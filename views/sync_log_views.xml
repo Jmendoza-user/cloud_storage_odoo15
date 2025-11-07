@@ -18,7 +18,8 @@
                                 <field name="file_name"/>
                             </h1>
                             <h2>
-                                <field name="model_name"/> (ID: <field name="record_id"/>)
+                                <field name="model_name"/>
+                                <span attrs="{'invisible': [('record_id', '=', False)]}">(ID: <field name="record_id" class="oe_inline"/>)</span>
                             </h2>
                         </div>
                         <group>
@@ -26,11 +27,23 @@
                                 <field name="sync_date"/>
                                 <field name="sync_type"/>
                                 <field name="config_id"/>
+                                <field name="start_time" attrs="{'invisible': [('start_time', '=', False)]}"/>
+                                <field name="end_time" attrs="{'invisible': [('end_time', '=', False)]}"/>
                             </group>
                             <group>
-                                <field name="file_size_bytes" widget="integer"/>
-                                <field name="original_path"/>
-                                <field name="drive_file_id"/>
+                                <field name="file_size_bytes" widget="integer" attrs="{'invisible': [('file_size_bytes', '=', 0)]}"/>
+                                <field name="original_path" attrs="{'invisible': [('original_path', '=', False)]}"/>
+                                <field name="drive_file_id" attrs="{'invisible': [('drive_file_id', '=', False)]}"/>
+                            </group>
+                        </group>
+                        <group string="Session Summary" attrs="{'invisible': [('total_processed', '=', 0)]}">
+                            <group>
+                                <field name="total_processed" string="Total Files Processed"/>
+                                <field name="total_success" string="Successful"/>
+                            </group>
+                            <group>
+                                <field name="total_errors" string="Errors"/>
+                                <field name="last_update" attrs="{'invisible': [('last_update', '=', False)]}"/>
                             </group>
                         </group>
                         <group string="Drive Links" attrs="{'invisible': [('drive_url', '=', False)]}">
@@ -54,9 +67,14 @@
                     <field name="file_name"/>
                     <field name="model_name"/>
                     <field name="sync_type"/>
-                    <field name="status" decoration-success="status == 'success'" 
-                           decoration-danger="status == 'error'" decoration-warning="status == 'partial'"/>
-                    <field name="file_size_bytes" widget="integer"/>
+                    <field name="status" decoration-success="status == 'success'"
+                           decoration-danger="status == 'error'" decoration-warning="status == 'in_progress'"/>
+                    <field name="total_processed" string="Total Files" optional="hide"/>
+                    <field name="total_success" string="Success" optional="hide"/>
+                    <field name="total_errors" string="Errors" optional="hide"/>
+                    <field name="file_size_bytes" widget="integer" optional="show"/>
+                    <field name="start_time" optional="hide"/>
+                    <field name="end_time" optional="hide"/>
                 </tree>
             </field>
         </record>
@@ -71,8 +89,11 @@
                     <field name="model_name"/>
                     <filter string="Success" name="success" domain="[('status', '=', 'success')]"/>
                     <filter string="Errors" name="errors" domain="[('status', '=', 'error')]"/>
+                    <filter string="In Progress" name="in_progress" domain="[('status', '=', 'in_progress')]"/>
+                    <separator/>
                     <filter string="Manual" name="manual" domain="[('sync_type', '=', 'manual')]"/>
                     <filter string="Automatic" name="automatic" domain="[('sync_type', '=', 'automatic')]"/>
+                    <filter string="Auto Sync Sessions" name="auto_sessions" domain="[('sync_type', '=', 'automatic'), ('model_name', '=', 'auto_sync_session')]"/>
                     <separator/>
                     <filter string="Today" name="today" domain="[('sync_date', '&gt;=', datetime.datetime.combine(context_today(), datetime.time(0,0,0))), ('sync_date', '&lt;=', datetime.datetime.combine(context_today(), datetime.time(23,59,59)))]"/>
                     <filter string="This Week" name="this_week" domain="[('sync_date', '&gt;=', (context_today() - datetime.timedelta(days=context_today().weekday())).strftime('%Y-%m-%d')), ('sync_date', '&lt;=', (context_today() + datetime.timedelta(days=6-context_today().weekday())).strftime('%Y-%m-%d'))]"/>

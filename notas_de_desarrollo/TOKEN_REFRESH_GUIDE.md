@@ -139,3 +139,9 @@ Estas mejoras son compatibles con:
 - Si el refresco falla, el estado cambia a 'error' o 'expired'
 
 
+
+
+
+
+
+

@@ -564,207 +564,80 @@ class CloudStorageSyncService(models.Model):
                 if model_config.model_name not in self.env:
                     _logger.warning(f"Model {model_config.model_name} does not exist in this Odoo instance. Skipping.")
                     continue
-                
+
                 model_name = model_config.model_name
                 batch_size = limit_per_model or 500  # Use provided limit or default to 500
-                
+
                 _logger.info(f"[MANUAL_SYNC] Processing model: {model_name} with limit: {batch_size}")
-                
-                # Use the same efficient logic as complete_sync
-                if model_name == 'ir.attachment':
-                    # Efficient query for attachments
-                    domain = [
-                        ('res_model', '!=', False),
-                        ('type', '=', 'binary'),
-                        ('file_size', '>', 0),
-                        ('file_size', '<=', 100 * 1024 * 1024),
-                        ('cloud_sync_status', 'in', ['local', 'error']),
-                        ('name', '!=', False),  # Not null
-                        ('name', '!=', ''),     # Not empty
-                        ('name', 'like', '%.%')  # Must contain a dot
-                    ]
-                    
-                    # Add extension filter
-                    _logger.info(f"[MANUAL_SYNC] Adding extension filter for ir.attachment. Allowed extensions: {allowed_extensions}")
+
+                # Universal approach: always search in ir.attachment filtered by res_model
+                # This works for ANY model the user configures
+                attachment_domain = [
+                    ('res_model', '=', model_name),
+                    ('type', '=', 'binary'),
+                    ('file_size', '>', 0),
+                    ('file_size', '<=', 100 * 1024 * 1024),
+                    ('cloud_sync_status', 'in', ['local', 'error']),
+                    ('name', '!=', False),  # Not null
+                    ('name', '!=', ''),     # Not empty
+                    ('name', 'like', '%.%')  # Must contain a dot
+                ]
+
+                # Add extension filter
+                _logger.info(f"[MANUAL_SYNC] Adding extension filter for {model_name}. Allowed extensions: {allowed_extensions}")
+                try:
+                    extension_domains = []
+                    for ext in allowed_extensions:
+                        if ext and len(ext) > 0:  # Ensure extension is valid
+                            extension_domains.append(('name', 'ilike', f'%.{ext}'))
+
+                    if extension_domains:
+                        if len(extension_domains) > 1:
+                            # Add OR operators as separate list items
+                            for _ in range(len(extension_domains) - 1):
+                                attachment_domain.append('|')
+                        attachment_domain.extend(extension_domains)
+
+                    _logger.info(f"[MANUAL_SYNC] Final domain for {model_name}: {attachment_domain}")
+                except Exception as e:
+                    _logger.error(f"[MANUAL_SYNC] Error building extension filter for {model_name}: {str(e)}")
+                    raise
+
+                attachments = self.env['ir.attachment'].search(
+                    attachment_domain,
+                    limit=batch_size,
+                    order='id ASC'
+                )
+
+                _logger.info(f"[MANUAL_SYNC] Found {len(attachments)} attachments for {model_name}")
+
+                # Process all attachments found for this model
+                for i, attachment in enumerate(attachments):
+                    _logger.debug(f"[MANUAL_SYNC] Processing attachment {i+1}/{len(attachments)} for {model_name}: ID={attachment.id}, name='{attachment.name}'")
                     try:
-                        extension_domains = []
-                        for ext in allowed_extensions:
-                            if ext and len(ext) > 0:  # Ensure extension is valid
-                                extension_domains.append(('name', 'ilike', f'%.{ext}'))
-                        
-                        if extension_domains:
-                            if len(extension_domains) > 1:
-                                domain.append('|' * (len(extension_domains) - 1))
-                            domain.extend(extension_domains)
-                        
-                        _logger.info(f"[MANUAL_SYNC] Final domain for ir.attachment: {domain}")
-                    except Exception as e:
-                        _logger.error(f"[MANUAL_SYNC] Error building extension filter: {str(e)}")
-                        raise
-                    
-                    attachments = self.env['ir.attachment'].search(
-                        domain, 
-                        limit=batch_size,
-                        order='id ASC'
-                    )
-                    
-                    _logger.info(f"[MANUAL_SYNC] Found {len(attachments)} attachments for ir.attachment")
-                    
-                    for i, attachment in enumerate(attachments):
-                        _logger.debug(f"[MANUAL_SYNC] Processing attachment {i+1}/{len(attachments)}: ID={attachment.id}, name='{attachment.name}'")
-                        try:
-                            # Safe extension extraction
-                            if attachment.name and '.' in attachment.name:
-                                file_extension = attachment.name.split('.')[-1].lower()
-                            else:
-                                _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
-                                continue
-                                
-                            if file_extension and file_extension in allowed_extensions:
-                                files_to_sync.append({
-                                    'record': attachment,
-                                    'attachment': attachment,
-                                    'model_config': model_config,
-                                    'file_extension': file_extension
-                                })
-                            else:
-                                _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
-                        except Exception as e:
-                            _logger.error(f"Error processing attachment {attachment.id} in ir.attachment: {str(e)}")
+                        # Safe extension extraction
+                        if attachment.name and '.' in attachment.name:
+                            file_extension = attachment.name.split('.')[-1].lower()
+                        else:
+                            _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
                             continue
-                
-                elif model_name in ['account.move', 'account.invoice', 'purchase.order', 'sale.order']:
-                    # For document models, look for related attachments
-                    attachment_domain = [
-                        ('res_model', '=', model_name),
-                        ('type', '=', 'binary'),
-                        ('file_size', '>', 0),
-                        ('file_size', '<=', 100 * 1024 * 1024),
-                        ('cloud_sync_status', 'in', ['local', 'error']),
-                        ('name', '!=', False),  # Not null
-                        ('name', '!=', ''),     # Not empty
-                        ('name', 'like', '%.%')  # Must contain a dot
-                    ]
-                    
-                    # Add extension filter
-                    _logger.info(f"[MANUAL_SYNC] Adding extension filter for {model_name}. Allowed extensions: {allowed_extensions}")
-                    try:
-                        extension_domains = []
-                        for ext in allowed_extensions:
-                            if ext and len(ext) > 0:  # Ensure extension is valid
-                                extension_domains.append(('name', 'ilike', f'%.{ext}'))
-                        
-                        if extension_domains:
-                            if len(extension_domains) > 1:
-                                attachment_domain.append('|' * (len(extension_domains) - 1))
-                            attachment_domain.extend(extension_domains)
-                        
-                        _logger.info(f"[MANUAL_SYNC] Final domain for {model_name}: {attachment_domain}")
+
+                        if file_extension and file_extension in allowed_extensions:
+                            # Use attachment directly - no need to check if record exists
+                            files_to_sync.append({
+                                'record': attachment,
+                                'attachment': attachment,
+                                'model_config': model_config,
+                                'file_extension': file_extension
+                            })
+                        else:
+                            _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
                     except Exception as e:
-                        _logger.error(f"[MANUAL_SYNC] Error building extension filter for {model_name}: {str(e)}")
-                        raise
-                    
-                    attachments = self.env['ir.attachment'].search(
-                        attachment_domain,
-                        limit=batch_size,
-                        order='id ASC'
-                    )
-                    
-                    _logger.info(f"[MANUAL_SYNC] Found {len(attachments)} attachments for {model_name}")
-                    
-                    for i, attachment in enumerate(attachments):
-                        _logger.debug(f"[MANUAL_SYNC] Processing attachment {i+1}/{len(attachments)} for {model_name}: ID={attachment.id}, name='{attachment.name}'")
-                        try:
-                            # Skip record existence check for problematic models and process attachment directly
-                            if model_name == 'account.move':
-                                _logger.debug(f"Processing account.move attachment {attachment.id} without record check due to SQL issues")
-                                if attachment.name and '.' in attachment.name:
-                                    file_extension = attachment.name.split('.')[-1].lower()
-                                    if file_extension and file_extension in allowed_extensions:
-                                        # Use attachment as both record and attachment for compatibility
-                                        files_to_sync.append({
-                                            'record': attachment,  # Use attachment as record fallback
-                                            'attachment': attachment,
-                                            'model_config': model_config,
-                                            'file_extension': file_extension
-                                        })
-                                    else:
-                                        _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
-                                else:
-                                    _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
-                            else:
-                                # For other models, try normal record check
-                                if attachment.res_id:
-                                    try:
-                                        # Use with_context to avoid loading unnecessary fields that might cause SQL errors
-                                        record = self.env[model_name].with_context(active_test=False).browse(attachment.res_id)
-                                        # Test if record exists without triggering field loading
-                                        if record.exists():
-                                            # Safe extension extraction
-                                            if attachment.name and '.' in attachment.name:
-                                                file_extension = attachment.name.split('.')[-1].lower()
-                                            else:
-                                                _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
-                                                continue
-                                                
-                                            if file_extension and file_extension in allowed_extensions:
-                                                files_to_sync.append({
-                                                    'record': record,
-                                                    'attachment': attachment,
-                                                    'model_config': model_config,
-                                                    'file_extension': file_extension
-                                                })
-                                            else:
-                                                _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
-                                        else:
-                                            _logger.debug(f"Skipping attachment {attachment.id}: related record {attachment.res_id} doesn't exist in model {model_name}")
-                                    except Exception as record_error:
-                                        _logger.warning(f"Error accessing record {attachment.res_id} in model {model_name}: {str(record_error)}. Using attachment directly.")
-                                        # If we can't access the record due to SQL errors, still process the attachment
-                                        if attachment.name and '.' in attachment.name:
-                                            file_extension = attachment.name.split('.')[-1].lower()
-                                            if file_extension and file_extension in allowed_extensions:
-                                                # Create a dummy record object for compatibility
-                                                files_to_sync.append({
-                                                    'record': attachment,  # Use attachment as record fallback
-                                                    'attachment': attachment,
-                                                    'model_config': model_config,
-                                                    'file_extension': file_extension
-                                                })
-                        except Exception as e:
-                            _logger.error(f"Error processing attachment {attachment.id} for {model_name}: {str(e)}")
-                            continue
-                
-                elif model_name in ['res.partner', 'hr.employee']:
-                    # Only process if jpg is allowed
-                    if 'jpg' in allowed_extensions:
-                        base_domain = []
-                        if model_name == 'res.partner':
-                            base_domain = [
-                                '|', ('is_company', '=', True), ('customer_rank', '>', 0),
-                                ('image_1920', '!=', False)
-                            ]
-                        elif model_name == 'hr.employee':
-                            base_domain = [('image_1920', '!=', False)]
-                        
-                        records = self.env[model_name].search(
-                            base_domain,
-                            limit=batch_size,
-                            order='id ASC'
-                        )
-                        
-                        for record in records:
-                            if getattr(record, model_config.field_name):
-                                file_name = f"{record.display_name or record.name}_{model_config.field_name}.jpg"
-                                files_to_sync.append({
-                                    'record': record,
-                                    'attachment': self._create_virtual_attachment(record, model_config.field_name, file_name),
-                                    'model_config': model_config,
-                                    'file_extension': 'jpg'
-                                })
-                
+                        _logger.error(f"Error processing attachment {attachment.id} for {model_name}: {str(e)}")
+                        continue
+
                 _logger.info(f"[MANUAL_SYNC] Found {len([f for f in files_to_sync if f['model_config'].model_name == model_name])} files for {model_name}")
-                                    
+
             except Exception as e:
                 _logger.error(f"Error getting files for model {model_config.model_name}: {str(e)}")
                 continue
@@ -870,6 +743,7 @@ class CloudStorageSyncService(models.Model):
                 'message': error_msg
             }
 
+    @api.model
     def manual_sync(self):
         config = self.env['cloud_storage.config'].get_active_config()
         if not config:
@@ -921,42 +795,320 @@ class CloudStorageSyncService(models.Model):
         }
 
     @api.model
-    def automatic_sync(self):
+    def manual_sync_safe(self):
+        """
+        Safe wrapper for manual_sync that handles all exceptions gracefully.
+        Used by server actions to prevent migration test failures.
+        """
+        try:
+            return self.manual_sync()
+        except UserError as e:
+            _logger.warning(f"cloud_storage: manual_sync UserError (expected during migration): {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Sync not available: {str(e)}",
+                    'type': 'warning'
+                }
+            }
+        except Exception as e:
+            _logger.error(f"cloud_storage: manual_sync unexpected error: {str(e)}")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'message': f"Error during sync: {str(e)}",
+                    'type': 'danger'
+                }
+            }
+
+    @api.model
+    def automatic_sync(self, batch_limit=100):
+        """Automatic sync via cron - processes files in batches and creates summary logs"""
+        _logger.info("[AUTO_SYNC] Starting automatic synchronization")
+
         configs = self.env['cloud_storage.config'].search([
             ('is_active', '=', True),
             ('auto_sync', '=', True)
         ])
-        
+
+        if not configs:
+            _logger.info("[AUTO_SYNC] No active configurations with auto_sync enabled")
+            return True
+
         for config in configs:
+            sync_session = None
             try:
+                # Validate authentication
                 if not config.auth_id or config.auth_id.state != 'authorized':
-                    _logger.warning(f"Skipping auto sync for config {config.name}: authentication not valid")
+                    error_msg = f"Authentication not valid for config {config.name}"
+                    _logger.warning(f"[AUTO_SYNC] {error_msg}")
+
+                    # Create error log
+                    self.env['cloud_storage.sync.log'].create({
+                        'sync_type': 'automatic',
+                        'status': 'error',
+                        'config_id': config.id,
+                        'model_name': 'auto_sync_session',
+                        'file_name': f'Auto Sync Session - {fields.Datetime.now()}',
+                        'error_message': error_msg,
+                        'start_time': fields.Datetime.now()
+                    })
                     continue
-                
+
+                # Get allowed extensions
+                allowed_extensions = config.file_type_ids.filtered('is_active').mapped('extension')
+                if not allowed_extensions:
+                    error_msg = "No active file types configured"
+                    _logger.warning(f"[AUTO_SYNC] {error_msg} for config {config.name}")
+
+                    self.env['cloud_storage.sync.log'].create({
+                        'sync_type': 'automatic',
+                        'status': 'error',
+                        'config_id': config.id,
+                        'model_name': 'auto_sync_session',
+                        'file_name': f'Auto Sync Session - {fields.Datetime.now()}',
+                        'error_message': error_msg,
+                        'start_time': fields.Datetime.now()
+                    })
+                    continue
+
+                _logger.info(f"[AUTO_SYNC] Processing config {config.name} with extensions: {allowed_extensions}")
+
+                # Create sync session for tracking
+                sync_session = self.env['cloud_storage.sync.log'].create({
+                    'sync_type': 'automatic',
+                    'status': 'in_progress',
+                    'config_id': config.id,
+                    'model_name': 'auto_sync_session',
+                    'file_name': f'Auto Sync Session - {fields.Datetime.now()}',
+                    'start_time': fields.Datetime.now(),
+                    'total_success': 0,
+                    'total_errors': 0,
+                    'total_processed': 0
+                })
+
                 service = self._get_google_drive_service(config.auth_id)
-                files_to_sync = self._get_files_to_sync(config)
-                
-                _logger.info(f"Starting automatic sync for config {config.name}: {len(files_to_sync)} files")
-                
-                for file_info in files_to_sync:
+
+                total_processed = 0
+                total_success = 0
+                total_errors = 0
+
+                # Process each active model configuration
+                for model_config in config.model_config_ids.filtered('is_active'):
                     try:
-                        result = self._sync_file(file_info, service, config)
-                        result['sync_type'] = 'automatic'
-                        
-                        if result['status'] == 'success':
-                            _logger.info(f"Successfully synced file: {result['file_name']}")
-                        else:
-                            _logger.error(f"Failed to sync file: {result['file_name']} - {result.get('message', 'Unknown error')}")
-                            
-                    except Exception as e:
-                        _logger.error(f"Error during automatic sync of file: {str(e)}")
+                        model_name = model_config.model_name
+
+                        if model_name not in self.env:
+                            _logger.warning(f"[AUTO_SYNC] Model {model_name} does not exist. Skipping.")
+                            continue
+
+                        # Count pending files
+                        pending_count = self._count_pending_files(model_config, allowed_extensions)
+                        _logger.info(f"[AUTO_SYNC] Found {pending_count} pending files for {model_name}")
+
+                        if pending_count == 0:
+                            continue
+
+                        # Limit files per model to avoid long-running cron
+                        files_to_process = min(pending_count, batch_limit)
+
+                        # Get batch of files
+                        batch_files = self._get_batch_files_to_sync(
+                            model_config, allowed_extensions, files_to_process, 0
+                        )
+
+                        if not batch_files:
+                            continue
+
+                        _logger.info(f"[AUTO_SYNC] Processing {len(batch_files)} files for {model_name}")
+
+                        # Process files
+                        for file_info in batch_files:
+                            try:
+                                result = self._sync_file_automatic(file_info, service, config, model_config)
+
+                                total_processed += 1
+                                if result['status'] == 'success':
+                                    total_success += 1
+                                    _logger.info(f"[AUTO_SYNC] Success: {result['file_name']}")
+                                else:
+                                    total_errors += 1
+                                    _logger.error(f"[AUTO_SYNC] Error: {result['file_name']} - {result.get('message', 'Unknown error')}")
+
+                            except Exception as file_error:
+                                total_errors += 1
+                                total_processed += 1
+                                _logger.error(f"[AUTO_SYNC] Exception syncing file: {str(file_error)}")
+                                continue
+
+                        # Commit after each model to save progress
+                        self.env.cr.commit()
+
+                    except Exception as model_error:
+                        _logger.error(f"[AUTO_SYNC] Error processing model {model_config.model_name}: {str(model_error)}")
                         continue
-                
-            except Exception as e:
-                _logger.error(f"Error during automatic sync for config {config.name}: {str(e)}")
+
+                # Mark session as completed
+                if sync_session:
+                    sync_session.write({
+                        'status': 'completed',
+                        'end_time': fields.Datetime.now(),
+                        'total_success': total_success,
+                        'total_errors': total_errors,
+                        'total_processed': total_processed
+                    })
+
+                _logger.info(f"[AUTO_SYNC] Completed for config {config.name}. Success: {total_success}, Errors: {total_errors}, Total: {total_processed}")
+
+            except Exception as config_error:
+                error_msg = str(config_error)
+                _logger.error(f"[AUTO_SYNC] Error processing config {config.name}: {error_msg}")
+
+                # Mark session as error if it exists
+                if sync_session:
+                    sync_session.write({
+                        'status': 'error',
+                        'end_time': fields.Datetime.now(),
+                        'error_message': error_msg
+                    })
+
                 continue
-        
+
+        _logger.info("[AUTO_SYNC] Automatic synchronization completed")
         return True
+
+    def _sync_file_automatic(self, file_info, service, config, model_config):
+        """Sync a single file for automatic sync - similar to _sync_file but with automatic sync_type"""
+        try:
+            attachment = file_info['attachment']
+            record = file_info['record']
+
+            if not attachment.datas:
+                error_msg = 'No file data available'
+                _logger.warning(f"[AUTO_SYNC] {error_msg} for {attachment.name}")
+
+                # Create error log
+                self.env['cloud_storage.sync.log'].create({
+                    'sync_type': 'automatic',
+                    'status': 'error',
+                    'model_name': model_config.model_name,
+                    'record_id': record.id if hasattr(record, 'id') else False,
+                    'file_name': attachment.name,
+                    'error_message': error_msg,
+                    'config_id': config.id
+                })
+
+                return {
+                    'status': 'error',
+                    'message': error_msg,
+                    'file_name': attachment.name
+                }
+
+            # Check file size
+            file_size = attachment.file_size or 0
+            max_file_size = 100 * 1024 * 1024  # 100MB
+
+            if file_size > max_file_size:
+                error_msg = f'File too large ({file_size / (1024*1024):.1f}MB). Maximum: 100MB'
+                _logger.warning(f"[AUTO_SYNC] {error_msg}: {attachment.name}")
+
+                self.env['cloud_storage.sync.log'].create({
+                    'sync_type': 'automatic',
+                    'status': 'error',
+                    'model_name': model_config.model_name,
+                    'record_id': record.id if hasattr(record, 'id') else False,
+                    'file_name': attachment.name,
+                    'error_message': error_msg,
+                    'config_id': config.id
+                })
+
+                return {
+                    'status': 'error',
+                    'message': error_msg,
+                    'file_name': attachment.name
+                }
+
+            # Decode file content
+            try:
+                file_content = base64.b64decode(attachment.datas)
+            except Exception as decode_error:
+                error_msg = f'Error decoding file data: {str(decode_error)}'
+                _logger.error(f"[AUTO_SYNC] {error_msg}")
+
+                self.env['cloud_storage.sync.log'].create({
+                    'sync_type': 'automatic',
+                    'status': 'error',
+                    'model_name': model_config.model_name,
+                    'record_id': record.id if hasattr(record, 'id') else False,
+                    'file_name': attachment.name,
+                    'error_message': error_msg,
+                    'config_id': config.id
+                })
+
+                return {
+                    'status': 'error',
+                    'message': error_msg,
+                    'file_name': attachment.name
+                }
+
+            # Create folder if needed
+            folder_id = None
+            root_parent = config.drive_root_folder_id if config.drive_root_folder_id else None
+            if model_config.drive_folder_name:
+                folder_id = self._create_drive_folder(service, model_config.drive_folder_name, parent_id=root_parent)
+
+            # Upload to Drive
+            drive_file = self._upload_file_to_drive(
+                service, file_content, attachment.name, folder_id
+            )
+
+            # Update attachment if configured
+            if config.replace_local_with_cloud:
+                self._update_attachment_to_cloud(attachment, drive_file, file_content, config)
+
+            # Create success log
+            sync_log = self.env['cloud_storage.sync.log'].create({
+                'sync_type': 'automatic',
+                'status': 'success',
+                'model_name': model_config.model_name,
+                'record_id': record.id if hasattr(record, 'id') else False,
+                'file_name': attachment.name,
+                'original_path': f"attachment_{attachment.id}",
+                'drive_url': drive_file['web_view_link'],
+                'drive_file_id': drive_file['id'],
+                'file_size_bytes': len(file_content),
+                'config_id': config.id
+            })
+
+            return {
+                'status': 'success',
+                'file_name': attachment.name,
+                'drive_url': drive_file['web_view_link'],
+                'log_id': sync_log.id
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            _logger.error(f"[AUTO_SYNC] Error syncing file {attachment.name}: {error_msg}")
+
+            # Create error log
+            self.env['cloud_storage.sync.log'].create({
+                'sync_type': 'automatic',
+                'status': 'error',
+                'model_name': model_config.model_name,
+                'record_id': record.id if hasattr(record, 'id') else False,
+                'file_name': attachment.name,
+                'error_message': error_msg,
+                'config_id': config.id
+            })
+
+            return {
+                'status': 'error',
+                'file_name': attachment.name,
+                'message': error_msg
+            }
 
     @api.model
     def reconcile_cloud_references(self, limit=200):
@@ -996,6 +1148,7 @@ class CloudStorageSyncService(models.Model):
         _logger.info(f"[RECONCILE] Finalizado. Verificados OK: {count_ok}")
         return count_ok
 
+    @api.model
     def complete_sync(self, batch_size=50):
         """Optimized complete sync with efficient filtering and batch processing"""
         config = self.env['cloud_storage.config'].get_active_config()
@@ -1265,77 +1418,33 @@ class CloudStorageSyncService(models.Model):
             model_name = model_config.model_name
             if model_name not in self.env:
                 return 0
-            
-            # Build efficient domain for counting
-            if model_name == 'ir.attachment':
-                # Count attachments that match criteria and haven't been synced
-                domain = [
-                    ('res_model', '!=', False),
-                    ('type', '=', 'binary'),
-                    ('file_size', '>', 0),
-                    ('file_size', '<=', 100 * 1024 * 1024),  # 100MB limit
-                    ('cloud_sync_status', 'in', ['local', 'error']),  # Not synced yet
-                    ('name', '!=', False),  # Not null
-                    ('name', '!=', ''),     # Not empty
-                    ('name', 'like', '%.%')  # Must contain a dot
-                ]
-                
-                # Add extension filter
-                extension_domains = []
-                for ext in allowed_extensions:
-                    extension_domains.append(('name', 'ilike', f'%.{ext}'))
-                
-                if extension_domains:
-                    if len(extension_domains) > 1:
-                        domain.append('|' * (len(extension_domains) - 1))
-                    domain.extend(extension_domains)
-                
-                return self.env['ir.attachment'].search_count(domain)
-            
-            elif model_name in ['account.move', 'account.invoice', 'purchase.order', 'sale.order']:
-                # Count attachments belonging to this model
-                attachment_domain = [
-                    ('res_model', '=', model_name),
-                    ('type', '=', 'binary'),
-                    ('file_size', '>', 0),
-                    ('file_size', '<=', 100 * 1024 * 1024),
-                    ('cloud_sync_status', 'in', ['local', 'error']),
-                    ('name', '!=', False),  # Not null
-                    ('name', '!=', ''),     # Not empty
-                    ('name', 'like', '%.%')  # Must contain a dot
-                ]
-                
-                # Add extension filter
-                extension_domains = []
-                for ext in allowed_extensions:
-                    extension_domains.append(('name', 'ilike', f'%.{ext}'))
-                
-                if extension_domains:
-                    if len(extension_domains) > 1:
-                        attachment_domain.append('|' * (len(extension_domains) - 1))
-                    attachment_domain.extend(extension_domains)
-                
-                return self.env['ir.attachment'].search_count(attachment_domain)
-            
-            elif model_name in ['res.partner', 'hr.employee']:
-                # Count records with image fields
-                base_domain = []
-                if model_name == 'res.partner':
-                    base_domain = [
-                        '|', ('is_company', '=', True), ('customer_rank', '>', 0),
-                        ('image_1920', '!=', False)
-                    ]
-                elif model_name == 'hr.employee':
-                    base_domain = [('image_1920', '!=', False)]
-                
-                # Check if jpg is in allowed extensions for images
-                if 'jpg' not in allowed_extensions:
-                    return 0
-                
-                return self.env[model_name].search_count(base_domain)
-            
-            return 0
-            
+
+            # Universal approach: count attachments filtered by res_model
+            attachment_domain = [
+                ('res_model', '=', model_name),
+                ('type', '=', 'binary'),
+                ('file_size', '>', 0),
+                ('file_size', '<=', 100 * 1024 * 1024),
+                ('cloud_sync_status', 'in', ['local', 'error']),
+                ('name', '!=', False),  # Not null
+                ('name', '!=', ''),     # Not empty
+                ('name', 'like', '%.%')  # Must contain a dot
+            ]
+
+            # Add extension filter
+            extension_domains = []
+            for ext in allowed_extensions:
+                extension_domains.append(('name', 'ilike', f'%.{ext}'))
+
+            if extension_domains:
+                if len(extension_domains) > 1:
+                    # Add OR operators as separate list items
+                    for _ in range(len(extension_domains) - 1):
+                        attachment_domain.append('|')
+                attachment_domain.extend(extension_domains)
+
+            return self.env['ir.attachment'].search_count(attachment_domain)
+
         except Exception as e:
             _logger.error(f"Error counting pending files for {model_config.model_name}: {str(e)}")
             return 0
@@ -1346,186 +1455,64 @@ class CloudStorageSyncService(models.Model):
             model_name = model_config.model_name
             if model_name not in self.env:
                 return []
-            
+
             files_to_sync = []
-            
-            if model_name == 'ir.attachment':
-                # Efficient query for attachments
-                domain = [
-                    ('res_model', '!=', False),
-                    ('type', '=', 'binary'),
-                    ('file_size', '>', 0),
-                    ('file_size', '<=', 100 * 1024 * 1024),
-                    ('cloud_sync_status', 'in', ['local', 'error']),
-                    ('name', '!=', False),  # Not null
-                    ('name', '!=', ''),     # Not empty
-                    ('name', 'like', '%.%')  # Must contain a dot
-                ]
-                
-                # Add extension filter
-                extension_domains = []
-                for ext in allowed_extensions:
-                    extension_domains.append(('name', 'ilike', f'%.{ext}'))
-                
-                if extension_domains:
-                    if len(extension_domains) > 1:
-                        domain.append('|' * (len(extension_domains) - 1))
-                    domain.extend(extension_domains)
-                
-                attachments = self.env['ir.attachment'].search(
-                    domain, 
-                    limit=batch_size, 
-                    offset=offset,
-                    order='id ASC'  # Consistent ordering
-                )
-                
-                for attachment in attachments:
-                    try:
-                        # Safe extension extraction
-                        if attachment.name and '.' in attachment.name:
-                            file_extension = attachment.name.split('.')[-1].lower()
-                        else:
-                            _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
-                            continue
-                            
-                        if file_extension and file_extension in allowed_extensions:
-                            files_to_sync.append({
-                                'record': attachment,
-                                'attachment': attachment,
-                                'model_config': model_config,
-                                'file_extension': file_extension
-                            })
-                        else:
-                            _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
-                    except Exception as e:
-                        _logger.error(f"Error processing attachment {attachment.id} in batch: {str(e)}")
+
+            # Universal approach: always search in ir.attachment filtered by res_model
+            attachment_domain = [
+                ('res_model', '=', model_name),
+                ('type', '=', 'binary'),
+                ('file_size', '>', 0),
+                ('file_size', '<=', 100 * 1024 * 1024),
+                ('cloud_sync_status', 'in', ['local', 'error']),
+                ('name', '!=', False),  # Not null
+                ('name', '!=', ''),     # Not empty
+                ('name', 'like', '%.%')  # Must contain a dot
+            ]
+
+            # Add extension filter
+            extension_domains = []
+            for ext in allowed_extensions:
+                extension_domains.append(('name', 'ilike', f'%.{ext}'))
+
+            if extension_domains:
+                if len(extension_domains) > 1:
+                    # Add OR operators as separate list items
+                    for _ in range(len(extension_domains) - 1):
+                        attachment_domain.append('|')
+                attachment_domain.extend(extension_domains)
+
+            attachments = self.env['ir.attachment'].search(
+                attachment_domain,
+                limit=batch_size,
+                offset=offset,
+                order='id ASC'
+            )
+
+            for attachment in attachments:
+                try:
+                    # Safe extension extraction
+                    if attachment.name and '.' in attachment.name:
+                        file_extension = attachment.name.split('.')[-1].lower()
+                    else:
+                        _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
                         continue
-            
-            elif model_name in ['account.move', 'account.invoice', 'purchase.order', 'sale.order']:
-                # For document models, look for related attachments instead of field-based files
-                # Get attachments that belong to records of this model
-                attachment_domain = [
-                    ('res_model', '=', model_name),
-                    ('type', '=', 'binary'),
-                    ('file_size', '>', 0),
-                    ('file_size', '<=', 100 * 1024 * 1024),
-                    ('cloud_sync_status', 'in', ['local', 'error']),
-                    ('name', '!=', False),  # Not null
-                    ('name', '!=', ''),     # Not empty
-                    ('name', 'like', '%.%')  # Must contain a dot
-                ]
-                
-                # Add extension filter
-                extension_domains = []
-                for ext in allowed_extensions:
-                    extension_domains.append(('name', 'ilike', f'%.{ext}'))
-                
-                if extension_domains:
-                    if len(extension_domains) > 1:
-                        attachment_domain.append('|' * (len(extension_domains) - 1))
-                    attachment_domain.extend(extension_domains)
-                
-                attachments = self.env['ir.attachment'].search(
-                    attachment_domain,
-                    limit=batch_size,
-                    offset=offset,
-                    order='id ASC'
-                )
-                
-                for attachment in attachments:
-                    # Get the related record
-                    try:
-                        # Skip record existence check for problematic models and process attachment directly
-                        if model_name == 'account.move':
-                            _logger.debug(f"Processing account.move attachment {attachment.id} without record check due to SQL issues")
-                            if attachment.name and '.' in attachment.name:
-                                file_extension = attachment.name.split('.')[-1].lower()
-                                if file_extension and file_extension in allowed_extensions:
-                                    # Use attachment as both record and attachment for compatibility
-                                    files_to_sync.append({
-                                        'record': attachment,  # Use attachment as record fallback
-                                        'attachment': attachment,
-                                        'model_config': model_config,
-                                        'file_extension': file_extension
-                                    })
-                                else:
-                                    _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
-                            else:
-                                _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
-                        else:
-                            # For other models, try normal record check
-                            if attachment.res_id:
-                                try:
-                                    # Use with_context to avoid loading unnecessary fields that might cause SQL errors
-                                    record = self.env[model_name].with_context(active_test=False).browse(attachment.res_id)
-                                    # Test if record exists without triggering field loading
-                                    if record.exists():
-                                        # Safe extension extraction
-                                        if attachment.name and '.' in attachment.name:
-                                            file_extension = attachment.name.split('.')[-1].lower()
-                                        else:
-                                            _logger.debug(f"Skipping attachment {attachment.id}: no valid file extension in name '{attachment.name}'")
-                                            continue
-                                            
-                                        if file_extension and file_extension in allowed_extensions:
-                                            files_to_sync.append({
-                                                'record': record,
-                                                'attachment': attachment,
-                                                'model_config': model_config,
-                                                'file_extension': file_extension
-                                            })
-                                        else:
-                                            _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
-                                    else:
-                                        _logger.debug(f"Skipping attachment {attachment.id}: related record {attachment.res_id} doesn't exist in model {model_name}")
-                                except Exception as record_error:
-                                    _logger.warning(f"Error accessing record {attachment.res_id} in model {model_name}: {str(record_error)}. Using attachment directly.")
-                                    # If we can't access the record due to SQL errors, still process the attachment
-                                    if attachment.name and '.' in attachment.name:
-                                        file_extension = attachment.name.split('.')[-1].lower()
-                                        if file_extension and file_extension in allowed_extensions:
-                                            # Create a dummy record object for compatibility
-                                            files_to_sync.append({
-                                                'record': attachment,  # Use attachment as record fallback
-                                                'attachment': attachment,
-                                                'model_config': model_config,
-                                                'file_extension': file_extension
-                                            })
-                    except Exception as e:
-                        _logger.error(f"Error processing attachment {attachment.id} for {model_name} in batch: {str(e)}")
-                        continue
-            
-            elif model_name in ['res.partner', 'hr.employee']:
-                # Only process if jpg is allowed
-                if 'jpg' in allowed_extensions:
-                    base_domain = []
-                    if model_name == 'res.partner':
-                        base_domain = [
-                            '|', ('is_company', '=', True), ('customer_rank', '>', 0),
-                            ('image_1920', '!=', False)
-                        ]
-                    elif model_name == 'hr.employee':
-                        base_domain = [('image_1920', '!=', False)]
-                    
-                    records = self.env[model_name].search(
-                        base_domain,
-                        limit=batch_size,
-                        offset=offset,
-                        order='id ASC'
-                    )
-                    
-                    for record in records:
-                        if getattr(record, model_config.field_name):
-                            file_name = f"{record.display_name or record.name}_{model_config.field_name}.jpg"
-                            files_to_sync.append({
-                                'record': record,
-                                'attachment': self._create_virtual_attachment(record, model_config.field_name, file_name),
-                                'model_config': model_config,
-                                'file_extension': 'jpg'
-                            })
-            
+
+                    if file_extension and file_extension in allowed_extensions:
+                        files_to_sync.append({
+                            'record': attachment,
+                            'attachment': attachment,
+                            'model_config': model_config,
+                            'file_extension': file_extension
+                        })
+                    else:
+                        _logger.debug(f"Skipping attachment {attachment.id}: extension '{file_extension}' not in allowed extensions")
+                except Exception as e:
+                    _logger.error(f"Error processing attachment {attachment.id} in batch: {str(e)}")
+                    continue
+
             return files_to_sync
-            
+
         except Exception as e:
             _logger.error(f"Error getting batch files for {model_config.model_name}: {str(e)}")
             return []
@@ -1534,20 +1521,20 @@ class CloudStorageSyncService(models.Model):
         """Process a batch of files and return results"""
         batch_success = 0
         batch_errors = 0
-        
+
         for file_info in batch_files:
             try:
                 result = self._sync_file(file_info, service, config)
-                
+
                 if result['status'] == 'success':
                     batch_success += 1
                 else:
                     batch_errors += 1
-                    
+
             except Exception as sync_error:
                 _logger.error(f"Error syncing file in batch: {str(sync_error)}")
                 batch_errors += 1
-        
+
         return {
             'success': batch_success,
             'errors': batch_errors

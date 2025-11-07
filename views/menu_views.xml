@@ -38,7 +38,7 @@
             <field name="name">Check Token Status</field>
             <field name="model_id" ref="model_cloud_storage_config"/>
             <field name="state">code</field>
-            <field name="code">model.action_global_token_status()</field>
+            <field name="code">action = model.action_global_token_status()</field>
         </record>
 
         <!-- Manual Sync Menu -->
